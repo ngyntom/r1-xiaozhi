@@ -14,8 +14,8 @@ import android.util.Log;
 
 import com.phicomm.r1.xiaozhi.core.XiaozhiCore;
 
-import org.concentus.OpusDecoder;
-import org.concentus.OpusException;
+import io.github.jaredmdobson.concentus.OpusDecoder;
+import io.github.jaredmdobson.concentus.OpusException;
 
 import java.io.File;
 import java.io.FileOutputStream;

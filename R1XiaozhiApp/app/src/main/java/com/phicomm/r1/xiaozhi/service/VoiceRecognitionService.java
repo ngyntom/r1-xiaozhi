@@ -19,9 +19,9 @@ import com.phicomm.r1.xiaozhi.config.XiaozhiConfig;
 import com.phicomm.r1.xiaozhi.core.ListeningMode;
 import com.phicomm.r1.xiaozhi.core.XiaozhiCore;
 
-import org.concentus.OpusApplication;
-import org.concentus.OpusEncoder;
-import org.concentus.OpusException;
+import io.github.jaredmdobson.concentus.OpusApplication;
+import io.github.jaredmdobson.concentus.OpusEncoder;
+import io.github.jaredmdobson.concentus.OpusException;
 
 import java.util.Arrays;
 
