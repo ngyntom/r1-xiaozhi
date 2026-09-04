@@ -22,6 +22,23 @@ android {
         }
     }
     
+    signingConfigs {
+        debug {
+            // Stable, committed debug keystore - CI's default ephemeral
+            // ~/.android/debug.keystore is regenerated fresh on every
+            // GitHub Actions run, so each build got a different signing
+            // key. That made every redeploy fail with
+            // INSTALL_FAILED_UPDATE_INCOMPATIBLE unless the previous
+            // build was uninstalled first, wiping activation/app data
+            // every single time. Using a fixed key here lets `pm install
+            // -r` update in place instead.
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled true
@@ -29,6 +46,7 @@ android {
         }
         debug {
             debuggable true
+            signingConfig signingConfigs.debug
         }
     }
     

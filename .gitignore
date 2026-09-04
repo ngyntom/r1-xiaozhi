@@ -48,6 +48,11 @@ captures/
 # Uncomment the following lines if you do not want to check your keystore files in.
 *.jks
 *.keystore
+# Except the stable debug keystore, committed on purpose so CI signs every
+# build with the same key - otherwise each GitHub Actions run's ephemeral
+# default debug key made every redeploy require an uninstall (wiping
+# activation/app data) before it could reinstall.
+!R1XiaozhiApp/app/debug.keystore
 
 # External native build folder generated in Android Studio 2.2 and later
 .externalNativeBuild
