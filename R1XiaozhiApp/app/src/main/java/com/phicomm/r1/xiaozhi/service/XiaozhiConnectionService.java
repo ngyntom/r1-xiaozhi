@@ -534,6 +534,10 @@ public class XiaozhiConnectionService extends Service {
             String type = json.optString("type");
             if ("tts".equals(type)) {
                 handleTTSMessage(json);
+            } else if ("stt".equals(type)) {
+                // ASR transcript of what the server heard - real field is
+                // "text" at the top level, not nested under "payload".
+                Log.i(TAG, "STT transcript: " + json.optString("text"));
             } else if ("hello".equals(type)) {
                 // Server's own hello reply - this is what actually confirms
                 // the session is live (the HTTP 101 upgrade alone doesn't;
@@ -572,6 +576,10 @@ public class XiaozhiConnectionService extends Service {
                 } else {
                     core.setDeviceState(DeviceState.SPEAKING);
                 }
+            } else if ("sentence_start".equals(state)) {
+                // Carries the TTS text being spoken (for subtitle/logging
+                // display only - doesn't change device state).
+                Log.i(TAG, "TTS sentence: " + json.optString("text"));
             } else if ("stop".equals(state)) {
                 if (core.isKeepListening()) {
                     // Resume listening
@@ -599,28 +607,35 @@ public class XiaozhiConnectionService extends Service {
         }
         
         try {
+            // Real schema (see xiaozhi-esp32/docs/websocket.md, py-xiaozhi
+            // protocol.py) is flat: {"session_id","type":"listen","state":
+            // "start","mode":"auto"|"manual"|"realtime"} - not header/payload.
             JSONObject message = new JSONObject();
-            
-            JSONObject header = new JSONObject();
-            header.put("name", "StartListening");
-            header.put("namespace", "ai.xiaoai.recognizer");
-            header.put("message_id", UUID.randomUUID().toString());
-            
-            JSONObject payload = new JSONObject();
-            payload.put("mode", mode.getValue());
-            
-            message.put("header", header);
-            message.put("payload", payload);
-            
+            message.put("session_id", sessionId);
+            message.put("type", "listen");
+            message.put("state", "start");
+            message.put("mode", toWireMode(mode));
+
             String json = message.toString();
-            Log.d(TAG, "Sending StartListening: " + json);
+            Log.d(TAG, "Sending listen/start: " + json);
             webSocketClient.send(json);
-            
+
         } catch (JSONException e) {
             Log.e(TAG, "Failed to send StartListening: " + e.getMessage(), e);
         }
     }
-    
+
+    /**
+     * Map our ListeningMode enum's wire value to the protocol's actual
+     * mode strings (auto|manual|realtime) - ListeningMode.AUTO_STOP's
+     * value is "auto_stop", which the server does not recognize.
+     */
+    private String toWireMode(ListeningMode mode) {
+        if (mode == ListeningMode.MANUAL) return "manual";
+        if (mode == ListeningMode.REALTIME) return "realtime";
+        return "auto";
+    }
+
     /**
      * Send stop listening message
      */
@@ -629,27 +644,22 @@ public class XiaozhiConnectionService extends Service {
             Log.w(TAG, "Cannot send message - not connected");
             return;
         }
-        
+
         try {
             JSONObject message = new JSONObject();
-            
-            JSONObject header = new JSONObject();
-            header.put("name", "StopListening");
-            header.put("namespace", "ai.xiaoai.recognizer");
-            header.put("message_id", UUID.randomUUID().toString());
-            
-            message.put("header", header);
-            message.put("payload", new JSONObject());
-            
+            message.put("session_id", sessionId);
+            message.put("type", "listen");
+            message.put("state", "stop");
+
             String json = message.toString();
-            Log.d(TAG, "Sending StopListening: " + json);
+            Log.d(TAG, "Sending listen/stop: " + json);
             webSocketClient.send(json);
-            
+
         } catch (JSONException e) {
             Log.e(TAG, "Failed to send StopListening: " + e.getMessage(), e);
         }
     }
-    
+
     /**
      * Send abort speaking message
      */
@@ -658,34 +668,36 @@ public class XiaozhiConnectionService extends Service {
             Log.w(TAG, "Cannot send message - not connected");
             return;
         }
-        
+
         try {
             JSONObject message = new JSONObject();
-            
-            JSONObject header = new JSONObject();
-            header.put("name", "AbortSpeaking");
-            header.put("namespace", "ai.xiaoai.tts");
-            header.put("message_id", UUID.randomUUID().toString());
-            
-            JSONObject payload = new JSONObject();
+            message.put("session_id", sessionId);
+            message.put("type", "abort");
             if (reason != null) {
-                payload.put("reason", reason);
+                message.put("reason", reason);
             }
-            
-            message.put("header", header);
-            message.put("payload", payload);
-            
+
             String json = message.toString();
-            Log.d(TAG, "Sending AbortSpeaking: " + json);
+            Log.d(TAG, "Sending abort: " + json);
             webSocketClient.send(json);
-            
+
         } catch (JSONException e) {
             Log.e(TAG, "Failed to send AbortSpeaking: " + e.getMessage(), e);
         }
     }
-    
+
     /**
-     * Send text message (sau khi paired)
+     * Send text message (best-effort only)
+     *
+     * NOTE: the real Xiaozhi protocol has NO text-query input path - it is
+     * audio-in / audio+text-out only (confirmed against py-xiaozhi and
+     * xiaozhi-esp32 sources: "listen"/"state":"detect" only *reports* a
+     * locally-detected wake word, it doesn't submit a query). The web
+     * dashboard's "send text" button will not get a real reply from the
+     * server no matter what shape this sends - there is nothing to fix
+     * here without a server-side/MCP-side text-injection feature that
+     * doesn't exist in the base protocol. This is kept only in case a
+     * specific deployment's server adds custom handling for it.
      */
     public void sendTextMessage(String text) {
         if (webSocketClient == null || !webSocketClient.isOpen()) {
@@ -695,20 +707,13 @@ public class XiaozhiConnectionService extends Service {
 
         try {
             JSONObject message = new JSONObject();
-
-            JSONObject header = new JSONObject();
-            header.put("name", "Recognize");
-            header.put("namespace", "ai.xiaoai.recognizer");
-            header.put("message_id", UUID.randomUUID().toString());
-
-            JSONObject payload = new JSONObject();
-            payload.put("text", text);
-
-            message.put("header", header);
-            message.put("payload", payload);
+            message.put("session_id", sessionId);
+            message.put("type", "listen");
+            message.put("state", "detect");
+            message.put("text", text);
 
             String json = message.toString();
-            Log.d(TAG, "Sending text: " + json);
+            Log.d(TAG, "Sending text (best-effort, protocol has no real text-query path): " + json);
             webSocketClient.send(json);
 
         } catch (JSONException e) {
