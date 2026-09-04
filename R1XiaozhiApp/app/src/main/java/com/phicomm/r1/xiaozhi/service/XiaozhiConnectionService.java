@@ -34,6 +34,8 @@ import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -72,6 +74,9 @@ public class XiaozhiConnectionService extends Service {
     private Handler retryHandler;
     private int retryCount = 0;
     private boolean isRetrying = false;
+
+    // Background executor to keep network/connect off the main thread (prevent ANR)
+    private ExecutorService executor = Executors.newSingleThreadExecutor();
     
     public class LocalBinder extends Binder {
         public XiaozhiConnectionService getService() {
@@ -158,7 +163,7 @@ public class XiaozhiConnectionService extends Service {
                 Log.i(TAG, "Access token received, auto-connecting WebSocket...");
 
                 // FIX #1: Auto-connect WebSocket immediately after activation
-                connectWithToken(accessToken);
+                connect();
 
                 // Notify UI after connection attempt
                 if (connectionListener != null) {
@@ -217,12 +222,18 @@ public class XiaozhiConnectionService extends Service {
                 Log.i(TAG, "Starting auto-connect on service startup...");
 
                 // Delay connect to ensure service is fully initialized
-                retryHandler.postDelayed(new Runnable() {
+                // Run on background executor to avoid blocking main thread (ANR)
+                executor.execute(new Runnable() {
                     @Override
                     public void run() {
+                        try {
+                            Thread.sleep(1000); // 1 second delay
+                        } catch (InterruptedException e) {
+                            // ignore
+                        }
                         connect();
                     }
-                }, 1000); // 1 second delay
+                });
             } else {
                 Log.i(TAG, "Device is already connected");
             }
@@ -246,6 +257,16 @@ public class XiaozhiConnectionService extends Service {
      * 3. If activated -> connect with token
      */
     public void connect() {
+        // Run connection work on background thread to avoid blocking main/HTTP thread
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                connectInternal();
+            }
+        });
+    }
+
+    private void connectInternal() {
         // Check if already connected
         if (webSocketClient != null && webSocketClient.isOpen()) {
             Log.w(TAG, "Already connected");
@@ -873,6 +894,10 @@ public class XiaozhiConnectionService extends Service {
         // Unregister from core
         if (core != null) {
             core.setConnectionService(null);
+        }
+
+        if (executor != null) {
+            executor.shutdown();
         }
 
         super.onDestroy();
