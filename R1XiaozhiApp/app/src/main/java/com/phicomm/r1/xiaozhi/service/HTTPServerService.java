@@ -234,6 +234,13 @@ public class HTTPServerService extends Service {
                 return;
             }
 
+            // Nhấn để nói - kích hoạt phiên "listen" thủ công (push-to-talk),
+            // không cần wake word
+            if ("POST".equals(method) && "/talk".equals(path)) {
+                serveTalk(writer);
+                return;
+            }
+
             // Gửi câu lệnh text tới Xiaozhi
             if ("POST".equals(method) && "/send-text".equals(path)) {
                 serveSendText(writer, body);
@@ -357,11 +364,18 @@ public class HTTPServerService extends Service {
         "</div>" +
 
         "<div class=\"card\">" +
+        "<h2>Nói Chuyện</h2>" +
+        "<div class=\"row\">" +
+        "<button class=\"btn-g\" id=\"talkBtn\" style=\"font-size:16px;padding:14px 24px\" onclick=\"pushToTalk()\">🎤 Nhấn Để Nói</button>" +
+        "</div>" +
+        "<div id=\"talkStatus\" style=\"margin-top:8px;font-size:13px;color:#9ab\"></div>" +
+        "</div>" +
+
+        "<div class=\"card\">" +
         "<h2>Điều Khiển Nhanh</h2>" +
         "<div class=\"row\">" +
-        "<button class=\"btn-g\" onclick=\"setVoice(true)\">Bật Đánh Thức</button>" +
+        "<button class=\"btn-g\" onclick=\"setVoice(true)\">Bật Đánh Thức (thử nghiệm)</button>" +
         "<button class=\"btn-r\" onclick=\"setVoice(false)\">Tắt Đánh Thức</button>" +
-        "<button class=\"btn-o\" onclick=\"sendText('Bây giờ là mấy giờ')\">Hỏi giờ</button>" +
         "<button class=\"btn-s\" onclick=\"setLed()\">Đổi LED</button>" +
         "</div>" +
         "<div class=\"row\" style=\"margin-top:10px\">" +
@@ -451,6 +465,14 @@ public class HTTPServerService extends Service {
         "});" +
         "}" +
         "function setVoice(on){req('POST','/voice',{listening:on},function(r,s){log((r&&r.message)||'voice');refresh();});}" +
+        "function pushToTalk(){" +
+        "var btn=document.getElementById('talkBtn');btn.disabled=true;" +
+        "document.getElementById('talkStatus').textContent='Đang nghe... hãy nói câu hỏi';" +
+        "req('POST','/talk',null,function(r,s){" +
+        "log((r&&r.message)||'talk');" +
+        "setTimeout(function(){btn.disabled=false;document.getElementById('talkStatus').textContent='';},12000);" +
+        "});" +
+        "}" +
         "function sendText(t){req('POST','/send-text',{text:t},function(r,s){log((r&&r.message)||'sent');});}" +
         "function sendCmd(){var t=document.getElementById('cmdText').value;if(t){sendText(t);document.getElementById('cmdText').value='';}}" +
         "function setLed(){req('POST','/led',{action:'cycle'},function(r,s){log((r&&r.message)||'led');});}" +
@@ -593,6 +615,21 @@ public class HTTPServerService extends Service {
         r.put("success", true);
         r.put("listening", listening);
         r.put("message", listening ? "Đã bật nghe từ đánh thức" : "Đã tắt nghe từ đánh thức");
+        sendJsonResponse(writer, 200, r.toString());
+    }
+
+    /**
+     * POST /talk - "Nhấn để nói": bắt đầu một phiên listen thủ công
+     * (push-to-talk), bỏ qua wake word detection hoàn toàn.
+     */
+    private void serveTalk(PrintWriter writer) throws JSONException {
+        Intent i = new Intent(this, VoiceRecognitionService.class);
+        i.setAction(VoiceRecognitionService.ACTION_PUSH_TO_TALK);
+        startService(i);
+
+        JSONObject r = new JSONObject();
+        r.put("success", true);
+        r.put("message", "Đang nghe... hãy nói câu hỏi của bạn");
         sendJsonResponse(writer, 200, r.toString());
     }
 

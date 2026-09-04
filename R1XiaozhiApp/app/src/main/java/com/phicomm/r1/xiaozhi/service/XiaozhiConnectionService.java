@@ -196,22 +196,6 @@ public class XiaozhiConnectionService extends Service {
         Log.i(TAG, "=== SERVICE STARTED ===");
         retryHandler = new Handler();
 
-        // FIX: Handle SEND_AUDIO action from VoiceRecognitionService
-        if (intent != null && "SEND_AUDIO".equals(intent.getAction())) {
-            byte[] audioData = intent.getByteArrayExtra("audio_data");
-            int sampleRate = intent.getIntExtra("sample_rate", 16000);
-            int channels = intent.getIntExtra("channels", 1);
-
-            if (audioData != null && audioData.length > 0) {
-                Log.i(TAG, "Received audio data: " + audioData.length + " bytes");
-                sendAudioToServer(audioData, sampleRate, channels);
-            } else {
-                Log.w(TAG, "Received SEND_AUDIO action but no audio data");
-            }
-
-            return START_STICKY;
-        }
-
         // FIX #3: Auto-connect if device is activated but not connected
         // This handles boot/restart scenarios
         if (deviceActivator != null && deviceActivator.isActivated()) {
@@ -383,9 +367,25 @@ public class XiaozhiConnectionService extends Service {
                 public void onMessage(String message) {
                     Log.d(TAG, "Message received: " + message);
                     handleMessage(message);
-                    
+
                     if (connectionListener != null) {
                         connectionListener.onMessage(message);
+                    }
+                }
+
+                @Override
+                public void onMessage(java.nio.ByteBuffer bytes) {
+                    // Incoming TTS audio - raw Opus frames, not JSON. Route
+                    // to the playback service the same way other services
+                    // are looked up in-process (see XiaozhiCore).
+                    byte[] frame = new byte[bytes.remaining()];
+                    bytes.get(frame);
+                    AudioPlaybackService audio = core.getAudioService() != null
+                        ? core.getAudioService() : null;
+                    if (audio != null) {
+                        audio.playOpusFrame(frame);
+                    } else {
+                        Log.w(TAG, "Received audio frame (" + frame.length + " bytes) but AudioPlaybackService not bound");
                     }
                 }
                 
@@ -568,6 +568,13 @@ public class XiaozhiConnectionService extends Service {
             String state = json.optString("state");
             
             if ("start".equals(state)) {
+                // Server is about to stream Opus audio frames - open the
+                // playback track now so the first binary frame has somewhere
+                // to go.
+                if (core.getAudioService() != null) {
+                    core.getAudioService().startStreaming();
+                }
+
                 // Check listening mode
                 if (core.isKeepListening() &&
                     core.getListeningMode() == ListeningMode.REALTIME) {
@@ -581,6 +588,10 @@ public class XiaozhiConnectionService extends Service {
                 // display only - doesn't change device state).
                 Log.i(TAG, "TTS sentence: " + json.optString("text"));
             } else if ("stop".equals(state)) {
+                if (core.getAudioService() != null) {
+                    core.getAudioService().stopStreaming();
+                }
+
                 if (core.isKeepListening()) {
                     // Resume listening
                     core.setDeviceState(DeviceState.LISTENING);
@@ -722,66 +733,18 @@ public class XiaozhiConnectionService extends Service {
     }
 
     /**
-     * Gửi audio data đến Xiaozhi server
-     * FIX: Added to handle SEND_AUDIO action from VoiceRecognitionService
+     * Send one Opus-encoded audio frame as a raw binary WebSocket frame.
+     * Real Xiaozhi audio transport is NOT JSON/base64 - after a
+     * "listen"/state:"start" message, Opus frames go straight over the wire
+     * as binary WS frames (see xiaozhi-esp32/docs/websocket.md). Must be
+     * called between sendStartListening()/sendStopListening().
      */
-    private void sendAudioToServer(byte[] audioData, int sampleRate, int channels) {
+    public void sendAudioFrame(byte[] opusFrame) {
         if (webSocketClient == null || !webSocketClient.isOpen()) {
-            Log.w(TAG, "Cannot send audio - not connected");
-
-            // Notify LED service - error state
-            Intent ledIntent = new Intent(this, LEDControlService.class);
-            ledIntent.setAction(LEDControlService.ACTION_SET_ERROR);
-            startService(ledIntent);
-
+            Log.w(TAG, "Cannot send audio frame - not connected");
             return;
         }
-
-        try {
-            Log.i(TAG, "=== SENDING AUDIO TO SERVER ===");
-            Log.i(TAG, "Audio size: " + audioData.length + " bytes");
-            Log.i(TAG, "Sample rate: " + sampleRate);
-            Log.i(TAG, "Channels: " + channels);
-
-            // Encode audio to base64
-            String audioBase64 = android.util.Base64.encodeToString(audioData, android.util.Base64.NO_WRAP);
-
-            JSONObject message = new JSONObject();
-
-            JSONObject header = new JSONObject();
-            header.put("name", "Recognize");
-            header.put("namespace", "ai.xiaoai.recognizer");
-            header.put("message_id", UUID.randomUUID().toString());
-
-            JSONObject payload = new JSONObject();
-            payload.put("audio", audioBase64);
-            payload.put("format", "pcm");
-            payload.put("sample_rate", sampleRate);
-            payload.put("channels", channels);
-            payload.put("bits_per_sample", 16);
-
-            message.put("header", header);
-            message.put("payload", payload);
-
-            String json = message.toString();
-            Log.d(TAG, "Sending audio message (base64 length: " + audioBase64.length() + ")");
-            webSocketClient.send(json);
-
-            // Notify LED service - speaking state (waiting for response)
-            Intent ledIntent = new Intent(this, LEDControlService.class);
-            ledIntent.setAction(LEDControlService.ACTION_SET_SPEAKING);
-            startService(ledIntent);
-
-            Log.i(TAG, "=== AUDIO SENT SUCCESSFULLY ===");
-
-        } catch (JSONException e) {
-            Log.e(TAG, "Failed to send audio: " + e.getMessage(), e);
-
-            // Notify LED service - error state
-            Intent ledIntent = new Intent(this, LEDControlService.class);
-            ledIntent.setAction(LEDControlService.ACTION_SET_ERROR);
-            startService(ledIntent);
-        }
+        webSocketClient.send(opusFrame);
     }
     
     /**

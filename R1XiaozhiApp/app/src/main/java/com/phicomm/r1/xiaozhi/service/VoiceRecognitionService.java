@@ -16,9 +16,13 @@ import android.os.IBinder;
 import android.util.Log;
 
 import com.phicomm.r1.xiaozhi.config.XiaozhiConfig;
+import com.phicomm.r1.xiaozhi.core.ListeningMode;
 import com.phicomm.r1.xiaozhi.core.XiaozhiCore;
 
-import java.io.ByteArrayOutputStream;
+import org.concentus.OpusApplication;
+import org.concentus.OpusEncoder;
+import org.concentus.OpusException;
+
 import java.util.Arrays;
 
 /**
@@ -36,25 +40,33 @@ public class VoiceRecognitionService extends Service {
     // Action intent commands - dùng để điều khiển từ Web UI / HTTPServerService
     public static final String ACTION_SET_LISTENING = "com.phicomm.r1.xiaozhi.VOICE_LISTENING";
     public static final String ACTION_UPDATE_WAKE_WORD = "com.phicomm.r1.xiaozhi.VOICE_UPDATE_WAKE_WORD";
+    public static final String ACTION_PUSH_TO_TALK = "com.phicomm.r1.xiaozhi.PUSH_TO_TALK";
     public static final String EXTRA_LISTENING = "listening";
-    
-    // Audio configuration
+
+    // Audio configuration - 960 samples @ 16kHz = 60ms, matching the
+    // audio_params.frame_duration declared in the WebSocket hello handshake
+    // (XiaozhiConnectionService.sendHelloMessage()) so every AudioRecord
+    // read is exactly one Opus frame, no partial-frame buffering needed.
     private static final int SAMPLE_RATE = 16000;
+    private static final int FRAME_SIZE = 960;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
     private static final int BUFFER_SIZE_FACTOR = 2;
-    
+    // ~10 seconds of talking per turn (10s / 60ms per frame)
+    private static final int MAX_FRAMES_PER_TURN = 166;
+
     // Recording state
     private AudioRecord audioRecord;
     private boolean isRecording = false;
     private Thread recordingThread;
     private XiaozhiConfig config;
-    
+
     // Wake word detection
-    private boolean isListeningForWakeWord = true;
+    private boolean isListeningForWakeWord = false;
     private boolean isRecordingCommand = false;
-    private ByteArrayOutputStream commandAudioStream;
-    
+    private OpusEncoder opusEncoder;
+    private int framesSentThisTurn = 0;
+
     // Energy-based Voice Activity Detection
     private static final double ENERGY_THRESHOLD = 500.0;
     private static final int SILENCE_FRAMES = 20; // ~0.4 seconds at 50fps
@@ -111,6 +123,11 @@ public class VoiceRecognitionService extends Service {
                     Log.i(TAG, "New wake word: " + config.getWakeWord());
                 }
                 updateNotification();
+                return START_STICKY;
+            }
+
+            if (ACTION_PUSH_TO_TALK.equals(action)) {
+                startPushToTalk();
                 return START_STICKY;
             }
         }
@@ -284,7 +301,7 @@ public class VoiceRecognitionService extends Service {
         public void run() {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
             
-            short[] buffer = new short[1024];
+            short[] buffer = new short[FRAME_SIZE];
             audioRecord.startRecording();
             
             Log.d(TAG, "Recording loop started");
@@ -349,54 +366,105 @@ public class VoiceRecognitionService extends Service {
     }
     
     /**
-     * Xử lý khi phát hiện wake word
+     * Manual trigger from the Web UI "Nhấn để nói" (push-to-talk) button -
+     * bypasses the energy-threshold wake word entirely and starts a real
+     * listen session directly. This is the primary/reliable way to talk to
+     * the assistant until real wake word detection is implemented.
+     */
+    public void startPushToTalk() {
+        if (isRecordingCommand) {
+            Log.w(TAG, "Push-to-talk requested but already recording a command");
+            return;
+        }
+
+        if (!isRecording) {
+            if (!checkRecordAudioPermission()) {
+                Log.e(TAG, "Cannot start push-to-talk: no RECORD_AUDIO permission");
+                if (callback != null) {
+                    callback.onError("Khong co quyen ghi am");
+                }
+                return;
+            }
+            createNotificationChannel();
+            startForeground(NOTIFICATION_ID, createNotification());
+            startRecording();
+        }
+
+        beginRecordingSession();
+    }
+
+    /**
+     * Xử lý khi phát hiện wake word (energy-threshold path)
      */
     private void onWakeWordDetected() {
         Log.d(TAG, "Wake word detected!");
-        
+        beginRecordingSession();
+    }
+
+    /**
+     * Shared setup for both the energy-threshold wake word path and the
+     * push-to-talk button: open a "listen" session on the server and start
+     * streaming Opus frames.
+     */
+    private void beginRecordingSession() {
         isListeningForWakeWord = false;
         isRecordingCommand = true;
         silenceCounter = 0;
-        
-        commandAudioStream = new ByteArrayOutputStream();
-        
+        framesSentThisTurn = 0;
+
+        if (opusEncoder == null) {
+            try {
+                opusEncoder = new OpusEncoder(SAMPLE_RATE, 1, OpusApplication.OPUS_APPLICATION_VOIP);
+            } catch (OpusException e) {
+                Log.e(TAG, "Failed to create OpusEncoder", e);
+                isRecordingCommand = false;
+                isListeningForWakeWord = true;
+                if (callback != null) {
+                    callback.onError("Khong the khoi tao Opus encoder: " + e.getMessage());
+                }
+                return;
+            }
+        }
+
+        XiaozhiConnectionService cs = XiaozhiCore.getInstance().getConnectionService();
+        if (cs != null) {
+            cs.sendStartListening(ListeningMode.MANUAL);
+        } else {
+            Log.w(TAG, "ConnectionService not bound - cannot start listen session");
+        }
+
         if (callback != null) {
             callback.onWakeWordDetected();
             callback.onRecordingStarted();
         }
-        
+
         // Notify LED service
         Intent ledIntent = new Intent(this, LEDControlService.class);
         ledIntent.setAction(LEDControlService.ACTION_SET_LISTENING);
         startService(ledIntent);
     }
-    
+
     /**
-     * Ghi âm command sau wake word
-     * FIX: Added null check to prevent NullPointerException crash
+     * Ghi âm command: encode mỗi frame PCM thành Opus và gửi ngay lập tức
+     * dưới dạng binary WebSocket frame (giao thức thật là streaming liên
+     * tục trong lúc "listen", không phải gửi 1 blob lớn sau khi ghi xong).
      */
     private void recordCommandAudio(short[] buffer, int length) {
-        // FIX: Null check - prevent crash if stream already closed
-        if (commandAudioStream == null) {
-            Log.w(TAG, "commandAudioStream is null, skipping recording");
-            return;
-        }
-
         double energy = calculateEnergy(buffer, length);
 
-        // Convert short[] to byte[]
-        byte[] audioBytes = new byte[length * 2];
-        for (int i = 0; i < length; i++) {
-            audioBytes[i * 2] = (byte) (buffer[i] & 0xFF);
-            audioBytes[i * 2 + 1] = (byte) ((buffer[i] >> 8) & 0xFF);
+        XiaozhiConnectionService cs = XiaozhiCore.getInstance().getConnectionService();
+        if (cs != null && opusEncoder != null) {
+            try {
+                byte[] opusOut = new byte[4000]; // safety margin above any real Opus frame size
+                int bytesWritten = opusEncoder.encode(buffer, 0, length, opusOut, 0, opusOut.length);
+                if (bytesWritten > 0) {
+                    cs.sendAudioFrame(Arrays.copyOf(opusOut, bytesWritten));
+                }
+            } catch (OpusException e) {
+                Log.e(TAG, "Opus encode failed: " + e.getMessage());
+            }
         }
-
-        try {
-            commandAudioStream.write(audioBytes, 0, audioBytes.length);
-        } catch (Exception e) {
-            Log.e(TAG, "Error writing to commandAudioStream", e);
-            return;
-        }
+        framesSentThisTurn++;
 
         // Phát hiện kết thúc câu lệnh (silence detection)
         if (energy < ENERGY_THRESHOLD) {
@@ -414,13 +482,12 @@ public class VoiceRecognitionService extends Service {
             }
         }
 
-        // FIX: Check null again before accessing size (may be null after onCommandRecordingCompleted)
-        if (commandAudioStream != null && commandAudioStream.size() > SAMPLE_RATE * 2 * 10) {
+        if (framesSentThisTurn > MAX_FRAMES_PER_TURN) {
             Log.w(TAG, "Recording too long, force stopping");
             onCommandRecordingCompleted();
         }
     }
-    
+
     /**
      * Hoàn thành ghi âm command
      * FIX: Added null check and prevent double-call
@@ -432,56 +499,21 @@ public class VoiceRecognitionService extends Service {
             return;
         }
 
-        // FIX: Null check - prevent crash if stream is null
-        if (commandAudioStream == null) {
-            Log.e(TAG, "commandAudioStream is null, cannot complete recording");
-            isRecordingCommand = false;
-            isListeningForWakeWord = true;
-            return;
-        }
-
-        Log.d(TAG, "Command recording completed");
+        Log.d(TAG, "Command recording completed (" + framesSentThisTurn + " frames sent)");
 
         // FIX: Set flags FIRST to prevent re-entry
         isRecordingCommand = false;
         isListeningForWakeWord = true;
+        framesSentThisTurn = 0;
 
-        byte[] audioData = null;
-        try {
-            audioData = commandAudioStream.toByteArray();
-        } catch (Exception e) {
-            Log.e(TAG, "Error getting audio data from stream", e);
-            commandAudioStream = null;
-            return;
+        XiaozhiConnectionService cs = XiaozhiCore.getInstance().getConnectionService();
+        if (cs != null) {
+            cs.sendStopListening();
         }
-
-        // FIX: Close and null the stream immediately
-        try {
-            commandAudioStream.close();
-        } catch (Exception e) {
-            Log.e(TAG, "Error closing commandAudioStream", e);
-        }
-        commandAudioStream = null;
-
-        // Validate audio data
-        if (audioData == null || audioData.length == 0) {
-            Log.w(TAG, "No audio data recorded, skipping");
-            return;
-        }
-
-        Log.i(TAG, "Audio data size: " + audioData.length + " bytes");
 
         if (callback != null) {
-            callback.onRecordingCompleted(audioData);
+            callback.onRecordingCompleted(new byte[0]);
         }
-
-        // Gửi audio đến XiaozhiConnectionService
-        Intent intent = new Intent(this, XiaozhiConnectionService.class);
-        intent.setAction("SEND_AUDIO");
-        intent.putExtra("audio_data", audioData);
-        intent.putExtra("sample_rate", SAMPLE_RATE);
-        intent.putExtra("channels", 1);
-        startService(intent);
 
         // Reset LED
         Intent ledIntent = new Intent(this, LEDControlService.class);

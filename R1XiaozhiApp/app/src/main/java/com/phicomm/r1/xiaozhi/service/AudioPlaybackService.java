@@ -3,12 +3,19 @@ package com.phicomm.r1.xiaozhi.service;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.media.AudioFormat;
 import android.media.AudioManager;
+import android.media.AudioTrack;
 import android.media.MediaPlayer;
 import android.os.Binder;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.util.Log;
+
+import com.phicomm.r1.xiaozhi.core.XiaozhiCore;
+
+import org.concentus.OpusDecoder;
+import org.concentus.OpusException;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -24,17 +31,29 @@ public class AudioPlaybackService extends Service implements
     MediaPlayer.OnErrorListener {
     
     private static final String TAG = "AudioPlayback";
-    
+
     public static final String ACTION_PLAY_URL = "com.phicomm.r1.xiaozhi.PLAY_URL";
     public static final String ACTION_PLAY_DATA = "com.phicomm.r1.xiaozhi.PLAY_DATA";
     public static final String ACTION_STOP = "com.phicomm.r1.xiaozhi.STOP";
     public static final String ACTION_PAUSE = "com.phicomm.r1.xiaozhi.PAUSE";
     public static final String ACTION_RESUME = "com.phicomm.r1.xiaozhi.RESUME";
-    
+
+    // Server's audio_params.sample_rate in the hello reply is 24000 for
+    // downlink TTS audio (uplink from us is 16000) - see hello handshake.
+    private static final int TTS_SAMPLE_RATE = 24000;
+    private static final int TTS_CHANNELS = 1;
+
     private MediaPlayer mediaPlayer;
     private AudioManager audioManager;
     private boolean isPrepared = false;
-    
+
+    // Real-time Opus TTS playback (used by playOpusFrame/startStreaming/
+    // stopStreaming) - separate from the MediaPlayer/URL path above, which
+    // is kept for anything that plays a normal media file/URL.
+    private OpusDecoder opusDecoder;
+    private AudioTrack streamTrack;
+    private boolean isStreaming = false;
+
     private PlaybackCallback callback;
     
     public interface PlaybackCallback {
@@ -56,6 +75,7 @@ public class AudioPlaybackService extends Service implements
         super.onCreate();
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         initMediaPlayer();
+        XiaozhiCore.getInstance().setAudioService(this);
         Log.d(TAG, "AudioPlaybackService created");
     }
     
@@ -191,6 +211,114 @@ public class AudioPlaybackService extends Service implements
         }
     }
     
+    // ==================== Real-time Opus TTS playback ====================
+
+    /**
+     * Open the AudioTrack for a new TTS turn. Called when a "tts"/
+     * "state":"start" message arrives, before any binary Opus frames.
+     */
+    public synchronized void startStreaming() {
+        if (isStreaming) {
+            Log.w(TAG, "startStreaming() called while already streaming - reusing existing track");
+            return;
+        }
+
+        try {
+            opusDecoder = new OpusDecoder(TTS_SAMPLE_RATE, TTS_CHANNELS);
+        } catch (OpusException e) {
+            Log.e(TAG, "Failed to create OpusDecoder", e);
+            return;
+        }
+
+        int minBufferSize = AudioTrack.getMinBufferSize(
+            TTS_SAMPLE_RATE,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        );
+
+        streamTrack = new AudioTrack(
+            AudioManager.STREAM_MUSIC,
+            TTS_SAMPLE_RATE,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            Math.max(minBufferSize, 4096),
+            AudioTrack.MODE_STREAM
+        );
+        streamTrack.play();
+        isStreaming = true;
+
+        audioManager.requestAudioFocus(
+            audioFocusChangeListener,
+            AudioManager.STREAM_MUSIC,
+            AudioManager.AUDIOFOCUS_GAIN
+        );
+
+        Intent ledIntent = new Intent(this, LEDControlService.class);
+        ledIntent.setAction(LEDControlService.ACTION_SET_SPEAKING);
+        startService(ledIntent);
+
+        if (callback != null) {
+            callback.onPlaybackStarted();
+        }
+
+        Log.i(TAG, "TTS streaming started (sampleRate=" + TTS_SAMPLE_RATE + ")");
+    }
+
+    /**
+     * Decode one incoming Opus frame and write the PCM straight to the
+     * playing AudioTrack. Ignored if startStreaming() hasn't been called
+     * (e.g. a stray frame after a "tts"/"stop" already closed the track).
+     */
+    public synchronized void playOpusFrame(byte[] opusFrame) {
+        if (!isStreaming || opusDecoder == null || streamTrack == null) {
+            Log.w(TAG, "playOpusFrame() called but not streaming - dropping frame");
+            return;
+        }
+
+        try {
+            // 60ms frame_duration at 24kHz = 1440 samples/channel max.
+            short[] pcm = new short[1440 * TTS_CHANNELS];
+            int samplesDecoded = opusDecoder.decode(opusFrame, 0, opusFrame.length, pcm, 0, pcm.length, false);
+            streamTrack.write(pcm, 0, samplesDecoded * TTS_CHANNELS);
+        } catch (OpusException e) {
+            Log.e(TAG, "Opus decode failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Close the AudioTrack for the current TTS turn. Called on "tts"/
+     * "state":"stop".
+     */
+    public synchronized void stopStreaming() {
+        if (!isStreaming) {
+            return;
+        }
+        isStreaming = false;
+
+        if (streamTrack != null) {
+            try {
+                streamTrack.stop();
+                streamTrack.release();
+            } catch (Exception e) {
+                Log.e(TAG, "Error releasing stream AudioTrack", e);
+            }
+            streamTrack = null;
+        }
+        opusDecoder = null;
+
+        audioManager.abandonAudioFocus(audioFocusChangeListener);
+
+        Intent ledIntent = new Intent(this, LEDControlService.class);
+        ledIntent.setAction(LEDControlService.ACTION_SET_IDLE);
+        startService(ledIntent);
+
+        if (callback != null) {
+            callback.onPlaybackCompleted();
+        }
+
+        Log.i(TAG, "TTS streaming stopped");
+    }
+
     /**
      * Dừng phát
      */
@@ -335,7 +463,9 @@ public class AudioPlaybackService extends Service implements
     @Override
     public void onDestroy() {
         releaseMediaPlayer();
+        stopStreaming();
         audioManager.abandonAudioFocus(audioFocusChangeListener);
+        XiaozhiCore.getInstance().setAudioService(null);
         super.onDestroy();
         Log.d(TAG, "AudioPlaybackService destroyed");
     }
