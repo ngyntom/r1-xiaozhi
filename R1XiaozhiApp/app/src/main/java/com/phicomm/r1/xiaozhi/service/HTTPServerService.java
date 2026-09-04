@@ -20,8 +20,10 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.net.HttpURLConnection;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.URL;
 import java.net.URLDecoder;
 
 /**
@@ -776,7 +778,7 @@ public class HTTPServerService extends Service {
 
     /**
      * POST /authorize - Bắt đầu quá trình authorization với Xiaozhi
-     * Trả về local pairing code làm verification code (dùng cho Xiaozhi website)
+     * Gọi OTA API để lấy verification code từ server
      */
     private void serveAuthorize(PrintWriter writer) throws JSONException {
         boolean isPaired = PairingCodeGenerator.isPaired(this);
@@ -791,21 +793,95 @@ public class HTTPServerService extends Service {
             return;
         }
 
-        // Generate local pairing code as verification code
-        String pairingCode = PairingCodeGenerator.getPairingCode(this);
-        currentVerificationCode = pairingCode;
-        verificationCodeTimestamp = System.currentTimeMillis();
+        Log.i(TAG, "Fetching verification code from OTA API...");
+        try {
+            String deviceId = PairingCodeGenerator.getDeviceId(this);
+            String verificationCode = fetchVerificationCodeFromOTA(deviceId);
 
-        Log.i(TAG, "Verification code generated: " + currentVerificationCode);
+            if (verificationCode != null && !verificationCode.isEmpty()) {
+                currentVerificationCode = verificationCode;
+                verificationCodeTimestamp = System.currentTimeMillis();
 
-        response.put("success", true);
-        response.put("message", "Verification code ready");
-        response.put("status", "pending");
-        response.put("verification_code", pairingCode);
-        response.put("device_id", PairingCodeGenerator.getDeviceId(this));
-        response.put("instruction", "Visit https://xiaozhi.me/activate and enter verification code");
+                Log.i(TAG, "Got verification code from OTA: " + currentVerificationCode);
+
+                response.put("success", true);
+                response.put("message", "Verification code from server");
+                response.put("status", "pending");
+                response.put("verification_code", verificationCode);
+                response.put("device_id", deviceId);
+                response.put("instruction", "Visit https://xiaozhi.me/console/agents and enter verification code");
+            } else {
+                response.put("success", false);
+                response.put("message", "Failed to get verification code from server");
+                response.put("status", "error");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Authorization failed: " + e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", "Authorization error: " + e.getMessage());
+            response.put("status", "error");
+        }
 
         sendJsonResponse(writer, 200, response.toString());
+    }
+
+    /**
+     * Fetch verification code từ Xiaozhi OTA API
+     */
+    private String fetchVerificationCodeFromOTA(String deviceId) throws Exception {
+        String otaUrl = "https://api.tenclass.net/xiaozhi/ota/?device_id=" + deviceId +
+                       "&client_id=1000013";
+
+        Log.d(TAG, "OTA URL: " + otaUrl);
+
+        URL url = new URL(otaUrl);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+
+        try {
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Device-Id", deviceId);
+            conn.setRequestProperty("Client-Id", "1000013");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+
+            // Send minimal payload
+            JSONObject payload = new JSONObject();
+            JSONObject board = new JSONObject();
+            board.put("type", "android");
+            board.put("mac", deviceId);
+            payload.put("board", board);
+
+            java.io.OutputStream os = conn.getOutputStream();
+            os.write(payload.toString().getBytes("UTF-8"));
+            os.flush();
+            os.close();
+
+            int statusCode = conn.getResponseCode();
+            java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(conn.getInputStream(), "UTF-8"));
+
+            StringBuilder responseBody = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                responseBody.append(line);
+            }
+            reader.close();
+
+            Log.d(TAG, "OTA Response: " + responseBody.toString());
+
+            JSONObject json = new JSONObject(responseBody.toString());
+            if (json.has("activation")) {
+                JSONObject activation = json.getJSONObject("activation");
+                return activation.optString("code", null);
+            }
+
+            return null;
+
+        } finally {
+            conn.disconnect();
+        }
     }
 
     /**
