@@ -162,13 +162,10 @@ public class XiaozhiConnectionService extends Service {
                 Log.i(TAG, "=== ACTIVATION SUCCESS ===");
                 Log.i(TAG, "Access token received, auto-connecting WebSocket...");
 
-                // FIX #1: Auto-connect WebSocket immediately after activation
+                // FIX #1: Auto-connect WebSocket immediately after activation.
+                // onPairingSuccess() is reported from onOpen() once the WebSocket
+                // handshake actually succeeds, not optimistically here.
                 connect();
-
-                // Notify UI after connection attempt
-                if (connectionListener != null) {
-                    connectionListener.onPairingSuccess();
-                }
 
                 Log.i(TAG, "==========================");
             }
@@ -324,11 +321,18 @@ public class XiaozhiConnectionService extends Service {
         }
         
         try {
-            URI serverUri = new URI(XiaozhiConfig.WEBSOCKET_URL);
-            
+            // Prefer the real WebSocket URL returned by the OTA server
+            // (XiaozhiConfig.WEBSOCKET_URL points at the wrong xiaozhi.me
+            // endpoint and only works as a last-resort fallback).
+            String wsUrl = deviceFingerprint.getWebSocketUrl();
+            if (wsUrl == null || wsUrl.isEmpty()) {
+                wsUrl = XiaozhiConfig.WEBSOCKET_URL;
+            }
+            URI serverUri = new URI(wsUrl);
+
             // Enhanced logging for debugging
             Log.i(TAG, "=== WEBSOCKET CONNECTION ===");
-            Log.i(TAG, "URL: " + XiaozhiConfig.WEBSOCKET_URL);
+            Log.i(TAG, "URL: " + wsUrl);
             Log.i(TAG, "Token (first 30 chars): " + (accessToken.length() > 30 ? accessToken.substring(0, 30) + "..." : accessToken));
             Log.i(TAG, "Token length: " + accessToken.length());
             Log.i(TAG, "============================");
@@ -349,6 +353,7 @@ public class XiaozhiConnectionService extends Service {
 
                     if (connectionListener != null) {
                         connectionListener.onConnected();
+                        connectionListener.onPairingSuccess();
                     }
 
                     // Send hello message (py-xiaozhi method)
@@ -513,14 +518,14 @@ public class XiaozhiConnectionService extends Service {
             Log.i(TAG, "==================================");
             webSocketClient.send(json);
             
-            // Mark as paired after successful hello
+            // Mark as paired after sending hello
+            // NOTE: this does not wait for a server-side hello ack (the
+            // protocol details of that response aren't confirmed yet) -
+            // it only confirms the WebSocket handshake succeeded and the
+            // hello message was sent.
             core.setDeviceState(DeviceState.IDLE);
             eventBus.post(new ConnectionEvent(true, "Connected with py-xiaozhi method"));
-            
-            if (connectionListener != null) {
-                connectionListener.onPairingSuccess();
-            }
-            
+
         } catch (Exception e) {
             Log.e(TAG, "Failed to send hello message: " + e.getMessage(), e);
             if (connectionListener != null) {

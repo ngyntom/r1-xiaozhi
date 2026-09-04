@@ -99,6 +99,13 @@ public class DeviceActivator {
      * STEP 2: Parse activation data or proceed if already activated
      */
     private void handleOTAResponse(OTAConfigManager.OTAResponse response) {
+        // Always capture the real WebSocket URL from the OTA response -
+        // the hardcoded XiaozhiConfig.WEBSOCKET_URL is wrong (points at
+        // xiaozhi.me instead of the real api.tenclass.net endpoint).
+        if (response.websocket != null && response.websocket.url != null) {
+            fingerprint.setWebSocketUrl(response.websocket.url);
+        }
+
         if (response.activation != null) {
             // Device needs activation - got challenge + code from server
             serverChallenge = response.activation.challenge;
@@ -106,7 +113,8 @@ public class DeviceActivator {
             
             Log.i(TAG, "Activation required - Challenge received from server");
             Log.i(TAG, "Verification code: " + verificationCode);
-            
+            fingerprint.setVerificationCode(verificationCode);
+
             // Notify UI to display code
             notifyVerificationCode(verificationCode);
             
@@ -122,7 +130,17 @@ public class DeviceActivator {
             // No activation data - device already activated on server
             Log.i(TAG, "Device already activated on server");
             fingerprint.setActivationStatus(true);
-            notifySuccess(fingerprint.getAccessToken());
+
+            // Use the real token from the OTA response if present, since a
+            // locally stored token may be stale or never set.
+            String token = null;
+            if (response.websocket != null && response.websocket.token != null) {
+                token = response.websocket.token;
+                fingerprint.setAccessToken(token);
+            } else {
+                token = fingerprint.getAccessToken();
+            }
+            notifySuccess(token);
             isActivating.set(false);
         }
     }

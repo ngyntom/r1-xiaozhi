@@ -28,6 +28,8 @@ public class DeviceFingerprint {
     private static final String KEY_MAC_ADDRESS = "mac_address";
     private static final String KEY_ACCESS_TOKEN = "access_token";
     private static final String KEY_TOKEN_TIMESTAMP = "token_timestamp";
+    private static final String KEY_VERIFICATION_CODE = "verification_code";
+    private static final String KEY_WEBSOCKET_URL = "websocket_url";
 
     // Token expiration: 24 hours (in milliseconds)
     private static final long TOKEN_EXPIRATION_MS = 24 * 60 * 60 * 1000;
@@ -69,8 +71,11 @@ public class DeviceFingerprint {
      */
     private void generateAndSaveIdentity() {
         try {
-            // Get MAC address
-            String macAddress = retrieveMacAddress();
+            // NOTE: Do NOT use the real hardware MAC. The Xiaozhi server pre-registers
+            // this device's real MAC from prior testing and returns a non-functional
+            // placeholder "test-token" for it. Generate a random locally-administered
+            // MAC instead so the server treats this as a fresh, unregistered device.
+            String macAddress = generateRandomMacAddress();
             
             // Generate serial number from MAC
             String serialNumber = generateSerialNumber(macAddress);
@@ -94,6 +99,24 @@ public class DeviceFingerprint {
         }
     }
     
+    /**
+     * Generate a random, locally-administered MAC address
+     * Workaround: the real hardware MAC is already registered server-side
+     * with a non-functional "test-token" placeholder.
+     */
+    private String generateRandomMacAddress() {
+        java.security.SecureRandom random = new java.security.SecureRandom();
+        byte[] bytes = new byte[6];
+        random.nextBytes(bytes);
+        bytes[0] = (byte) ((bytes[0] & 0xFC) | 0x02); // locally administered, unicast
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 6; i++) {
+            if (i > 0) sb.append(":");
+            sb.append(String.format("%02x", bytes[i]));
+        }
+        return sb.toString();
+    }
+
     /**
      * Retrieve MAC address from system
      * IMPORTANT: Returns format with colons "aa:bb:cc:dd:ee:ff" to match py-xiaozhi
@@ -301,6 +324,14 @@ public class DeviceFingerprint {
         return prefs.getString(KEY_ACCESS_TOKEN, null);
     }
 
+    public String getVerificationCode() {
+        return prefs.getString(KEY_VERIFICATION_CODE, null);
+    }
+
+    public String getWebSocketUrl() {
+        return prefs.getString(KEY_WEBSOCKET_URL, null);
+    }
+
     /**
      * Check if access token is expired
      * @return true if token is expired or doesn't exist
@@ -354,6 +385,15 @@ public class DeviceFingerprint {
             .putLong(KEY_TOKEN_TIMESTAMP, currentTime)
             .apply();
         Log.i(TAG, "Access token saved with timestamp: " + currentTime);
+    }
+
+    public void setVerificationCode(String code) {
+        prefs.edit().putString(KEY_VERIFICATION_CODE, code).apply();
+    }
+
+    public void setWebSocketUrl(String url) {
+        prefs.edit().putString(KEY_WEBSOCKET_URL, url).apply();
+        Log.i(TAG, "WebSocket URL saved: " + url);
     }
     
     /**
