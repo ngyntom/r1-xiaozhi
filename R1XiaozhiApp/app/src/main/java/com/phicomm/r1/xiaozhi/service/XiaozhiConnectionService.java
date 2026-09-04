@@ -582,6 +582,9 @@ public class XiaozhiConnectionService extends Service {
                     core.getAudioService().startStreaming();
                 }
 
+                startService(new Intent(this, LEDControlService.class)
+                    .setAction(LEDControlService.ACTION_SET_SPEAKING));
+
                 // Check listening mode
                 if (core.isKeepListening() &&
                     core.getListeningMode() == ListeningMode.REALTIME) {
@@ -604,10 +607,14 @@ public class XiaozhiConnectionService extends Service {
                 if (core.isKeepListening()) {
                     // Resume listening
                     core.setDeviceState(DeviceState.LISTENING);
+                    startService(new Intent(this, LEDControlService.class)
+                        .setAction(LEDControlService.ACTION_SET_LISTENING));
                     // Restart listening theo py-xiaozhi logic
                     sendStartListening(core.getListeningMode());
                 } else {
                     core.setDeviceState(DeviceState.IDLE);
+                    startService(new Intent(this, LEDControlService.class)
+                        .setAction(LEDControlService.ACTION_SET_IDLE));
                 }
             }
             

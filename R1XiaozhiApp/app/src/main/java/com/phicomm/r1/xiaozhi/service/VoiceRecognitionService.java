@@ -459,6 +459,8 @@ public class VoiceRecognitionService extends Service {
      */
     private void recordCommandAudio(short[] buffer, int length) {
         double energy = calculateEnergy(buffer, length);
+        // TEMP DEBUG: figure out why real speech isn't crossing ENERGY_THRESHOLD
+        Log.i(TAG, "DEBUG energy=" + energy + " threshold=" + ENERGY_THRESHOLD + " frame=" + framesSentThisTurn);
 
         XiaozhiConnectionService cs = XiaozhiCore.getInstance().getConnectionService();
         if (cs != null && opusEncoder != null) {
@@ -523,9 +525,12 @@ public class VoiceRecognitionService extends Service {
             callback.onRecordingCompleted(new byte[0]);
         }
 
-        // Reset LED
+        // Recording done, waiting on the server's stt/llm/tts reply now -
+        // XiaozhiConnectionService switches this to SPEAKING once "tts"/
+        // "start" arrives (or back to IDLE directly if the server never
+        // responds).
         Intent ledIntent = new Intent(this, LEDControlService.class);
-        ledIntent.setAction(LEDControlService.ACTION_SET_IDLE);
+        ledIntent.setAction(LEDControlService.ACTION_SET_THINKING);
         startService(ledIntent);
     }
     
