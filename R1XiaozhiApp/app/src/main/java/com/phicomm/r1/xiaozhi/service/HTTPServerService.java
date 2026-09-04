@@ -414,7 +414,8 @@ public class HTTPServerService extends Service {
         "if(x.readyState===4){var r=null;try{r=JSON.parse(x.responseText)}catch(e){}cb(r,x.status)}" +
         "};x.open(method,url,true);" +
         "if(method==='POST'){x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');" +
-        "x.send(typeof data==='string'?data:Object.keys(data).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(data[k])}).join('&'));" +
+        "var body='';if(data){body=typeof data==='string'?data:Object.keys(data).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(data[k])}).join('&');}" +
+        "x.send(body);" +
         "}else{x.send();}" +
         "}" +
         "function log(msg){var l=document.getElementById('logBox');l.innerHTML+='['+new Date().toLocaleTimeString()+'] '+msg+'\\n';l.scrollTop=l.scrollHeight;}" +
