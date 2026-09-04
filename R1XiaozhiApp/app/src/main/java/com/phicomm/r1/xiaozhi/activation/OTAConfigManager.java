@@ -1,6 +1,7 @@
 package com.phicomm.r1.xiaozhi.activation;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -251,18 +252,23 @@ public class OTAConfigManager {
      * Get or generate client ID
      */
     private String getClientId() {
-        // Use a consistent client ID stored in SharedPreferences
-        String clientId = context.getSharedPreferences("xiaozhi_ota", Context.MODE_PRIVATE)
-            .getString("client_id", null);
-        
+        return getPersistedClientId(context);
+    }
+
+    /**
+     * Get or generate the client ID persisted across reboots. Also used as
+     * the WebSocket handshake "Client-Id" header (see XiaozhiConnectionService)
+     * so it must stay identical to what was sent during OTA/activation.
+     */
+    public static String getPersistedClientId(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences("xiaozhi_ota", Context.MODE_PRIVATE);
+        String clientId = prefs.getString("client_id", null);
+
         if (clientId == null) {
             clientId = UUID.randomUUID().toString();
-            context.getSharedPreferences("xiaozhi_ota", Context.MODE_PRIVATE)
-                .edit()
-                .putString("client_id", clientId)
-                .apply();
+            prefs.edit().putString("client_id", clientId).apply();
         }
-        
+
         return clientId;
     }
     

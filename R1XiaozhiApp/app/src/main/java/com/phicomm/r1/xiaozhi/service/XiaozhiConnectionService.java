@@ -69,6 +69,7 @@ public class XiaozhiConnectionService extends Service {
     // Device activation
     private DeviceActivator deviceActivator;
     private DeviceFingerprint deviceFingerprint;
+    private String sessionId;
     
     // Retry logic
     private Handler retryHandler;
@@ -338,8 +339,16 @@ public class XiaozhiConnectionService extends Service {
             Log.i(TAG, "============================");
             
             // Create headers with Bearer token
+            // NOTE: the real Xiaozhi protocol (see xiaozhi-esp32/docs/websocket.md)
+            // requires Protocol-Version/Device-Id/Client-Id as WebSocket handshake
+            // headers - not just Authorization. Missing these does NOT fail the
+            // handshake itself (still gets HTTP 101) but the server silently
+            // closes the session right after the hello message.
             Map<String, String> headers = new HashMap<>();
             headers.put("Authorization", "Bearer " + accessToken);
+            headers.put("Protocol-Version", "1");
+            headers.put("Device-Id", deviceFingerprint.getMacAddress());
+            headers.put("Client-Id", com.phicomm.r1.xiaozhi.activation.OTAConfigManager.getPersistedClientId(this));
             Log.i(TAG, "Headers: " + headers.toString());
             
             webSocketClient = new WebSocketClient(serverUri, headers) {
@@ -353,10 +362,14 @@ public class XiaozhiConnectionService extends Service {
 
                     if (connectionListener != null) {
                         connectionListener.onConnected();
-                        connectionListener.onPairingSuccess();
                     }
 
-                    // Send hello message (py-xiaozhi method)
+                    // Send hello message (py-xiaozhi method).
+                    // onPairingSuccess() is NOT fired here - the server only
+                    // considers the session live once it replies with its own
+                    // "hello" (see handleMessage()); firing it on WS open alone
+                    // meant the app declared success right before the server
+                    // silently closed the socket for a malformed hello.
                     sendHelloMessage();
                 }
 
@@ -451,80 +464,53 @@ public class XiaozhiConnectionService extends Service {
     }
     
     /**
-     * Send hello message (py-xiaozhi method)
-     * Format:
+     * Send hello message - real Xiaozhi wire format (flat, NOT header/payload
+     * nested - that was py-xiaozhi's OTA response shape, not the WebSocket
+     * hello). See xiaozhi-esp32/docs/websocket.md and py-xiaozhi's
+     * src/protocols/websocket_protocol.py:
      * {
-     *   "header": {
-     *     "name": "hello",
-     *     "namespace": "ai.xiaoai.common",
-     *     "message_id": "uuid"
-     *   },
-     *   "payload": {
-     *     "device_id": "MAC_ADDRESS",
-     *     "serial_number": "SN-HASH-MAC",
-     *     "device_type": "android",
-     *     "os_version": "11",
-     *     "app_version": "1.0.0"
+     *   "type": "hello",
+     *   "version": 1,
+     *   "features": { "mcp": true },
+     *   "transport": "websocket",
+     *   "audio_params": {
+     *     "format": "opus",
+     *     "sample_rate": 16000,
+     *     "channels": 1,
+     *     "frame_duration": 60
      *   }
      * }
+     * The server replies with its own "type":"hello" message carrying a
+     * session_id - see handleMessage() for where that's actually consumed.
      */
     private void sendHelloMessage() {
         try {
-            String deviceId = deviceFingerprint.getMacAddress();
-            String serialNumber = deviceFingerprint.getSerialNumber();
-
-            // Validate device identity
-            if (deviceId == null || deviceId.isEmpty()) {
-                Log.e(TAG, "Cannot send hello - device ID is null");
-                if (connectionListener != null) {
-                    connectionListener.onError("Device ID not found");
-                }
-                return;
-            }
-
-            if (serialNumber == null || serialNumber.isEmpty()) {
-                Log.e(TAG, "Cannot send hello - serial number is null");
-                if (connectionListener != null) {
-                    connectionListener.onError("Serial number not found");
-                }
-                return;
-            }
-
             JSONObject message = new JSONObject();
+            message.put("type", "hello");
+            message.put("version", 1);
+            message.put("transport", "websocket");
 
-            // Header
-            JSONObject header = new JSONObject();
-            header.put("name", "hello");
-            header.put("namespace", "ai.xiaoai.common");
-            header.put("message_id", UUID.randomUUID().toString());
+            JSONObject features = new JSONObject();
+            features.put("mcp", true);
+            message.put("features", features);
 
-            // Payload - Match EXACTLY with py-xiaozhi format
-            JSONObject payload = new JSONObject();
-            payload.put("device_id", deviceId);  // MAC with colons: aa:bb:cc:dd:ee:ff
-            payload.put("serial_number", serialNumber);  // SN-HASH-MAC format
-            payload.put("device_type", "android");
-            payload.put("os_version", android.os.Build.VERSION.RELEASE);
-            payload.put("app_version", "1.0.0");
-
-            message.put("header", header);
-            message.put("payload", payload);
+            // NOTE: the audio pipeline here still sends raw PCM (see
+            // sendAudioToServer()), not Opus - advertising sample_rate/
+            // channels/frame_duration is enough to keep the hello handshake
+            // itself valid, but real two-way audio will need actual Opus
+            // encoding to match what's declared here.
+            JSONObject audioParams = new JSONObject();
+            audioParams.put("format", "opus");
+            audioParams.put("sample_rate", 16000);
+            audioParams.put("channels", 1);
+            audioParams.put("frame_duration", 60);
+            message.put("audio_params", audioParams);
 
             String json = message.toString();
-            Log.i(TAG, "=== HELLO MESSAGE (py-xiaozhi) ===");
-            Log.i(TAG, "Device ID: " + deviceId);
-            Log.i(TAG, "Serial Number: " + serialNumber);
-            Log.i(TAG, "OS Version: " + android.os.Build.VERSION.RELEASE);
+            Log.i(TAG, "=== HELLO MESSAGE (real Xiaozhi protocol) ===");
             Log.i(TAG, "Full JSON: " + json);
-            Log.i(TAG, "==================================");
+            Log.i(TAG, "==============================================");
             webSocketClient.send(json);
-            
-            // Mark as paired after sending hello
-            // NOTE: this does not wait for a server-side hello ack (the
-            // protocol details of that response aren't confirmed yet) -
-            // it only confirms the WebSocket handshake succeeded and the
-            // hello message was sent.
-            core.setDeviceState(DeviceState.IDLE);
-            eventBus.post(new ConnectionEvent(true, "Connected with py-xiaozhi method"));
 
         } catch (Exception e) {
             Log.e(TAG, "Failed to send hello message: " + e.getMessage(), e);
@@ -548,8 +534,20 @@ public class XiaozhiConnectionService extends Service {
             String type = json.optString("type");
             if ("tts".equals(type)) {
                 handleTTSMessage(json);
+            } else if ("hello".equals(type)) {
+                // Server's own hello reply - this is what actually confirms
+                // the session is live (the HTTP 101 upgrade alone doesn't;
+                // the server used to silently close right after receiving a
+                // malformed hello, which the old code was treating as success).
+                sessionId = json.optString("session_id", null);
+                Log.i(TAG, "Server hello received - session established, session_id=" + sessionId);
+                core.setDeviceState(DeviceState.IDLE);
+                eventBus.post(new ConnectionEvent(true, "Xiaozhi session established"));
+                if (connectionListener != null) {
+                    connectionListener.onPairingSuccess();
+                }
             }
-            
+
             // Handle other message types here
             Log.d(TAG, "Message type: " + type);
             
