@@ -151,6 +151,7 @@ public class HTTPServerService extends Service {
 
             routeRequest(writer, method, path, query, body);
 
+            writer.flush();
             clientSocket.close();
 
         } catch (IOException e) {
