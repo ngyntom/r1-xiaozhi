@@ -62,6 +62,14 @@ public class VoiceRecognitionService extends Service {
     private XiaozhiConfig config;
 
     // Wake word detection
+    // wakeWordModeEnabled reflects what the user asked for via /voice
+    // (persistent). isListeningForWakeWord is the live audio-routing flag,
+    // temporarily forced false while a session (wake-word- or push-to-talk-
+    // triggered) is in progress - onCommandRecordingCompleted() restores it
+    // from wakeWordModeEnabled, NOT hardcoded back to true, otherwise every
+    // push-to-talk turn would leave the mic re-armed for the noisy energy
+    // trigger and immediately false-fire on any residual sound.
+    private boolean wakeWordModeEnabled = false;
     private boolean isListeningForWakeWord = false;
     private boolean isRecordingCommand = false;
     private OpusEncoder opusEncoder;
@@ -503,7 +511,7 @@ public class VoiceRecognitionService extends Service {
 
         // FIX: Set flags FIRST to prevent re-entry
         isRecordingCommand = false;
-        isListeningForWakeWord = true;
+        isListeningForWakeWord = wakeWordModeEnabled;
         framesSentThisTurn = 0;
 
         XiaozhiConnectionService cs = XiaozhiCore.getInstance().getConnectionService();
@@ -552,7 +560,10 @@ public class VoiceRecognitionService extends Service {
      * Pause/Resume listening
      */
     public void setListening(boolean listening) {
-        isListeningForWakeWord = listening;
+        wakeWordModeEnabled = listening;
+        if (!isRecordingCommand) {
+            isListeningForWakeWord = listening;
+        }
         Log.d(TAG, "Listening: " + listening);
 
         // Nếu bật listening nhưng chưa recording (service vừa start qua action),
