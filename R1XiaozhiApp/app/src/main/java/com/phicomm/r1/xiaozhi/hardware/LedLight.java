@@ -1,26 +1,22 @@
 package com.phicomm.r1.xiaozhi.hardware;
 
-import android.util.Log;
-
 /**
- * Wrapper for R1 LED hardware control.
+ * LED hardware control.
  *
- * The actual native call is delegated to
- * com.phicomm.speaker.player.light.LedLight instead of being declared here.
- * JNI resolves a `native` method by the fully qualified class name baked
- * into the mangled symbol, and the prebuilt libledLight-jni.so in the R1
- * firmware was built for that exact class (the stock r1-helper app) - a
- * native method declared under this app's own package always throws
- * UnsatisfiedLinkError at call time no matter how it's structured, even
- * though System.loadLibrary() itself succeeds either way.
+ * Controlled via EchoServiceBridge (a WebSocket call to the stock
+ * EchoService, which runs as android.uid.system) rather than a direct JNI/
+ * sysfs write - this app's own process is confined by SELinux
+ * (u:r:untrusted_app:s0) and is denied write access to the LED sysfs node
+ * no matter how the write is attempted (confirmed via dmesg avc denial),
+ * so only a privileged process - EchoService - can actually flip it.
  *
- * Requirements:
- * - Root access
- * - SELinux permissive mode (setenforce 0)
- * - Native library libledLight-jni.so (pre-installed in R1 firmware)
+ * Command format reverse-engineered from the official web control panel's
+ * script (r1.wxfsq.com/js/r1_control.min.js): "lights_test set <flags>
+ * <RRGGBB or 0>".
  */
 public class LedLight {
-    private static final String TAG = "LedLight";
+
+    private static final String BRIGHTNESS_FLAGS = "7fffff8000";
 
     /**
      * Set LED color with maximum brightness.
@@ -29,29 +25,24 @@ public class LedLight {
      *              Example: 0xFF0000 = red, 0x00FF00 = green, 0x0000FF = blue
      */
     public static void setColor(int color) {
-        setColor(32767L, color);  // 32767 = 0x7FFF = max brightness
+        String hex = String.format("%06x", color & 0xFFFFFF);
+        EchoServiceBridge.sendShellCommand("lights_test set " + BRIGHTNESS_FLAGS + " " + hex);
     }
 
     /**
-     * Set LED color with custom brightness.
-     *
-     * @param brightness Brightness level (0-32767, where 32767 is maximum)
-     * @param color RGB color value (0xRRGGBB format)
+     * Set LED color - brightness parameter kept for API compatibility with
+     * callers ported from the old JNI wrapper, but EchoService's
+     * "lights_test" command doesn't take a separate brightness value the
+     * way the native call did.
      */
     public static void setColor(long brightness, int color) {
-        if (!com.phicomm.speaker.player.light.LedLight.loaded) {
-            Log.w(TAG, "Cannot set LED color - native library not loaded");
-            return;
-        }
-        try {
-            com.phicomm.speaker.player.light.LedLight.set_color(brightness, color);
-        } catch (UnsatisfiedLinkError e) {
-            com.phicomm.speaker.player.light.LedLight.loaded = false;
-            Log.w(TAG, "LED native symbol not found - disabling LED control: " + e.getMessage());
-        }
+        setColor(color);
     }
 
-    public static boolean isLoaded() {
-        return com.phicomm.speaker.player.light.LedLight.loaded;
+    /**
+     * Turn the LED off.
+     */
+    public static void turnOff() {
+        EchoServiceBridge.sendShellCommand("lights_test set " + BRIGHTNESS_FLAGS + " 0");
     }
 }

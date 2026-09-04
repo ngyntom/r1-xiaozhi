@@ -15,8 +15,10 @@ import com.phicomm.r1.xiaozhi.hardware.LedLight;
  * Service điều khiển LED strip của Phicomm R1
  * Hiển thị trạng thái hoạt động qua màu sắc và animation
  *
- * REFACTORED: Now uses native JNI library (libledLight-jni.so) instead of shell commands
- * Based on r1-helper implementation - 10x faster and more reliable
+ * LED is driven via EchoServiceBridge (see LedLight) - a local WebSocket
+ * call asking the stock, privileged EchoService to run the LED shell
+ * command on our behalf, since this app's own process is confined by
+ * SELinux and can't touch the LED device file directly, root or not.
  */
 public class LEDControlService extends Service {
 
@@ -43,8 +45,7 @@ public class LEDControlService extends Service {
     private Handler animationHandler;
     private Runnable animationRunnable;
     private XiaozhiConfig config;
-    private boolean hasRootAccess = false;
-    
+
     private final IBinder binder = new LocalBinder();
     
     public class LocalBinder extends Binder {
@@ -58,24 +59,7 @@ public class LEDControlService extends Service {
         super.onCreate();
         config = new XiaozhiConfig(this);
         animationHandler = new Handler();
-
-        // Set SELinux to permissive mode (required for LED hardware access)
-        setSELinuxPermissive();
-
-        // Check if native LED library loaded successfully
-        checkNativeLibrary();
-
-        if (!hasRootAccess) {
-            Log.w(TAG, "=== LED CONTROL DISABLED ===");
-            Log.w(TAG, "Native LED library not loaded - LED hardware control unavailable");
-            Log.w(TAG, "App will continue without LED feedback");
-            Log.w(TAG, "To enable LED: Ensure device is Phicomm R1 with firmware library");
-            Log.w(TAG, "===========================");
-        } else {
-            Log.i(TAG, "✅ LED Control enabled (native JNI library)");
-        }
-
-        Log.d(TAG, "LEDControlService created (Native Library: " + hasRootAccess + ")");
+        Log.i(TAG, "LEDControlService created - LED control via EchoServiceBridge (no root needed)");
     }
     
     @Override
@@ -124,52 +108,8 @@ public class LEDControlService extends Service {
     }
     
     /**
-     * Set SELinux to permissive mode (required for LED hardware access)
-     *
-     * Based on r1-helper BackgroundService implementation.
-     * The native LED library requires SELinux permissive mode to access
-     * the LED hardware device file.
-     */
-    private void setSELinuxPermissive() {
-        try {
-            String[] cmd = {"su", "-c", "setenforce", "0"};
-            Process process = Runtime.getRuntime().exec(cmd);
-            int exitCode = process.waitFor();
-
-            if (exitCode == 0) {
-                Log.i(TAG, "✅ SELinux set to permissive mode");
-            } else {
-                Log.w(TAG, "⚠️ Failed to set SELinux permissive (exit code: " + exitCode + ")");
-                Log.w(TAG, "LED control may not work - requires root access");
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "⚠️ Failed to set SELinux permissive: " + e.getMessage());
-            Log.w(TAG, "LED control may not work - requires root access");
-        }
-    }
-
-    /**
-     * Check if native LED library loaded successfully
-     *
-     * REFACTORED: Simplified from complex shell command checking.
-     * Now just checks if LedLight.loaded flag is true.
-     */
-    private void checkNativeLibrary() {
-        hasRootAccess = LedLight.isLoaded();
-
-        if (hasRootAccess) {
-            Log.i(TAG, "✅ Native LED library loaded successfully");
-        } else {
-            Log.w(TAG, "❌ Native LED library not loaded");
-            Log.w(TAG, "This is normal if not running on Phicomm R1 hardware");
-        }
-    }
-    
-    /**
-     * Set LED color directly using native JNI library
-     *
-     * REFACTORED: Replaced 40+ lines of shell command code with simple JNI call.
-     * Based on r1-helper implementation - 10x faster and more reliable.
+     * Set LED color via EchoServiceBridge (no root/SELinux permissive
+     * needed - EchoService itself runs the privileged write).
      *
      * @param color RGB color value (0xRRGGBB format)
      */
@@ -178,13 +118,6 @@ public class LEDControlService extends Service {
             return;
         }
 
-        if (!hasRootAccess) {
-            // Silently skip LED control if native library not loaded
-            // Don't spam logs - already warned in onCreate()
-            return;
-        }
-
-        // Direct JNI call - no shell command overhead!
         LedLight.setColor(color);
 
         // Only log in debug mode to avoid log spam
@@ -366,10 +299,6 @@ public class LEDControlService extends Service {
     
     public int getCurrentState() {
         return currentState;
-    }
-    
-    public boolean hasRootAccess() {
-        return hasRootAccess;
     }
     
     @Override
