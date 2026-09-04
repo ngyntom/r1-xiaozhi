@@ -3,33 +3,28 @@ package com.phicomm.r1.xiaozhi.hardware;
 import android.util.Log;
 
 /**
- * Native JNI wrapper for R1 LED hardware control.
- * 
- * This class loads the native library 'libledLight-jni.so' which is already
- * present in the Phicomm R1 firmware. It provides direct hardware access
- * for LED control, which is significantly faster and more reliable than
- * shell command execution.
- * 
+ * Wrapper for R1 LED hardware control.
+ *
+ * The actual native call is delegated to
+ * com.phicomm.speaker.player.light.LedLight instead of being declared here.
+ * JNI resolves a `native` method by the fully qualified class name baked
+ * into the mangled symbol, and the prebuilt libledLight-jni.so in the R1
+ * firmware was built for that exact class (the stock r1-helper app) - a
+ * native method declared under this app's own package always throws
+ * UnsatisfiedLinkError at call time no matter how it's structured, even
+ * though System.loadLibrary() itself succeeds either way.
+ *
  * Requirements:
  * - Root access
  * - SELinux permissive mode (setenforce 0)
  * - Native library libledLight-jni.so (pre-installed in R1 firmware)
- * 
- * Based on r1-helper implementation:
- * r1-helper/app/src/main/java/com/phicomm/speaker/player/light/LedLight.java
  */
 public class LedLight {
     private static final String TAG = "LedLight";
-    
-    /**
-     * Flag indicating whether the native library was loaded successfully.
-     * Check this before calling setColor() methods.
-     */
-    public static boolean loaded = false;
 
     /**
      * Set LED color with maximum brightness.
-     * 
+     *
      * @param color RGB color value (0xRRGGBB format)
      *              Example: 0xFF0000 = red, 0x00FF00 = green, 0x0000FF = blue
      */
@@ -39,55 +34,24 @@ public class LedLight {
 
     /**
      * Set LED color with custom brightness.
-     * 
+     *
      * @param brightness Brightness level (0-32767, where 32767 is maximum)
      * @param color RGB color value (0xRRGGBB format)
      */
     public static void setColor(long brightness, int color) {
-        if (!loaded) {
+        if (!com.phicomm.speaker.player.light.LedLight.loaded) {
             Log.w(TAG, "Cannot set LED color - native library not loaded");
             return;
         }
         try {
-            set_color(brightness, color);
+            com.phicomm.speaker.player.light.LedLight.set_color(brightness, color);
         } catch (UnsatisfiedLinkError e) {
-            // System.loadLibrary() succeeded but the specific native symbol
-            // is missing (JNI signature mismatch) - this throws at call time,
-            // not at load time, and crashes the whole process if uncaught.
-            loaded = false;
-            Log.w(TAG, "LED native symbol not found (packaging mismatch) - disabling LED control: " + e.getMessage());
+            com.phicomm.speaker.player.light.LedLight.loaded = false;
+            Log.w(TAG, "LED native symbol not found - disabling LED control: " + e.getMessage());
         }
     }
 
-    /**
-     * Native method that directly controls LED hardware.
-     * 
-     * This method is implemented in the native library libledLight-jni.so
-     * which is part of the R1 firmware.
-     * 
-     * IMPORTANT: Requires SELinux permissive mode to access LED hardware.
-     * 
-     * @param brightness Brightness level (0-32767)
-     * @param color RGB color value (0xRRGGBB)
-     */
-    public static native void set_color(long brightness, int color);
-
-    /**
-     * Static initializer - loads the native library on class load.
-     * 
-     * The library 'libledLight-jni.so' is already present in R1 firmware,
-     * so we don't need to bundle it with the APK.
-     */
-    static {
-        try {
-            System.loadLibrary("ledLight-jni");
-            loaded = true;
-            Log.i(TAG, "✅ R1 native LED library loaded successfully");
-        } catch (UnsatisfiedLinkError e) {
-            loaded = false;
-            Log.w(TAG, "❌ R1 LED library not found - LED control disabled");
-            Log.w(TAG, "Error: " + e.getMessage());
-        }
+    public static boolean isLoaded() {
+        return com.phicomm.speaker.player.light.LedLight.loaded;
     }
 }
-

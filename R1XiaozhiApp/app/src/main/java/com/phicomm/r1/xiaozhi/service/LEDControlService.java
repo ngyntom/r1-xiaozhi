@@ -155,7 +155,7 @@ public class LEDControlService extends Service {
      * Now just checks if LedLight.loaded flag is true.
      */
     private void checkNativeLibrary() {
-        hasRootAccess = LedLight.loaded;
+        hasRootAccess = LedLight.isLoaded();
 
         if (hasRootAccess) {
             Log.i(TAG, "✅ Native LED library loaded successfully");
