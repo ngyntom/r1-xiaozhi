@@ -76,8 +76,22 @@ public class VoiceRecognitionService extends Service {
     private int framesSentThisTurn = 0;
 
     // Energy-based Voice Activity Detection
-    private static final double ENERGY_THRESHOLD = 500.0;
-    private static final int SILENCE_FRAMES = 20; // ~0.4 seconds at 50fps
+    // FIX: 500.0 was too high for this mic's actual gain - live energy
+    // readings during real speech peaked around 500-600 only briefly, with
+    // most of an utterance well below that, so genuine speech was
+    // constantly misclassified as silence and cut recordings off after
+    // ~1.2s. Lowered to sit between measured background noise (~150) and
+    // speech (~250-600+).
+    private static final double ENERGY_THRESHOLD = 250.0;
+    // 35 frames * 60ms/frame = ~2.1s of continuous silence before treating
+    // a turn as finished (frame size is 960 samples @ 16kHz - see
+    // FRAME_SIZE). Longer than before so a natural mid-sentence pause
+    // doesn't end the recording early.
+    private static final int SILENCE_FRAMES = 35;
+    // Don't even start counting silence until at least this many frames
+    // have been captured (~1s) - gives the user a guaranteed minimum
+    // window to start speaking after the recording begins.
+    private static final int MIN_FRAMES_BEFORE_SILENCE_CHECK = 16;
     private int silenceCounter = 0;
     
     private VoiceCallback callback;
@@ -459,8 +473,6 @@ public class VoiceRecognitionService extends Service {
      */
     private void recordCommandAudio(short[] buffer, int length) {
         double energy = calculateEnergy(buffer, length);
-        // TEMP DEBUG: figure out why real speech isn't crossing ENERGY_THRESHOLD
-        Log.i(TAG, "DEBUG energy=" + energy + " threshold=" + ENERGY_THRESHOLD + " frame=" + framesSentThisTurn);
 
         XiaozhiConnectionService cs = XiaozhiCore.getInstance().getConnectionService();
         if (cs != null && opusEncoder != null) {
@@ -476,11 +488,13 @@ public class VoiceRecognitionService extends Service {
         }
         framesSentThisTurn++;
 
-        // Phát hiện kết thúc câu lệnh (silence detection)
+        // Phát hiện kết thúc câu lệnh (silence detection) - only once the
+        // minimum window has passed, so a slow start doesn't get cut off.
         if (energy < ENERGY_THRESHOLD) {
             silenceCounter++;
 
-            if (silenceCounter >= SILENCE_FRAMES) {
+            if (framesSentThisTurn >= MIN_FRAMES_BEFORE_SILENCE_CHECK
+                    && silenceCounter >= SILENCE_FRAMES) {
                 onCommandRecordingCompleted();
                 return; // FIX: Return immediately to prevent double-call
             }
