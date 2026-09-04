@@ -785,6 +785,10 @@ public class HTTPServerService extends Service {
     /**
      * POST /authorize - Bắt đầu quá trình authorization với Xiaozhi
      * Trả về verification code để user nhập trên website
+     *
+     * NOTE: uses DeviceActivator (real OTA challenge + HMAC-signed polling
+     * flow), not a client-invented code - the server only accepts a code it
+     * itself issued as part of an activation challenge.
      */
     private void serveAuthorize(PrintWriter writer) throws JSONException {
         boolean isActivated = deviceActivator.isActivated();
