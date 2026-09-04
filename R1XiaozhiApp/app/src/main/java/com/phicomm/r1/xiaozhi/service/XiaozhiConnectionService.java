@@ -54,7 +54,6 @@ import javax.net.ssl.SSLSocketFactory;
 public class XiaozhiConnectionService extends Service {
 
     private static final String TAG = "XiaozhiConnection";
-    private static final int MAX_RETRIES = 3;
     private static final int NOTIFICATION_ID = 1001;
     private static final String CHANNEL_ID = "xiaozhi_service_channel";
 
@@ -547,6 +546,12 @@ public class XiaozhiConnectionService extends Service {
                 // malformed hello, which the old code was treating as success).
                 sessionId = json.optString("session_id", null);
                 Log.i(TAG, "Server hello received - session established, session_id=" + sessionId);
+                // A confirmed-live session means this connection attempt
+                // succeeded - reset backoff so the NEXT drop (if any) starts
+                // retrying fast again instead of staying at the ~16s plateau
+                // from whatever retry count got it here.
+                isRetrying = false;
+                retryCount = 0;
                 core.setDeviceState(DeviceState.IDLE);
                 eventBus.post(new ConnectionEvent(true, "Xiaozhi session established"));
                 if (connectionListener != null) {
@@ -753,24 +758,23 @@ public class XiaozhiConnectionService extends Service {
     
     /**
      * Schedule reconnect với exponential backoff
+     *
+     * FIX: this used to give up permanently after MAX_RETRIES (3) attempts
+     * and never try again until something manually called connect() - on a
+     * device meant to run unattended, a rough patch of wifi (which this
+     * network has had repeatedly - DNS timeouts, adb going offline, ping
+     * loss) would silently strand it disconnected indefinitely. getRetryDelay()
+     * already caps the exponential backoff at retryCount=4 (16s), so it's
+     * safe to just keep retrying forever at that plateau instead of
+     * giving up.
      */
     private void scheduleReconnect(final int errorCode) {
-        if (retryCount >= MAX_RETRIES) {
-            Log.e(TAG, "Max retries reached. Giving up.");
-            isRetrying = false;
-            retryCount = 0;
-            
-            String errorMsg = ErrorCodes.getMessage(ErrorCodes.SERVER_UNAVAILABLE);
-            if (connectionListener != null) {
-                connectionListener.onError(errorMsg);
-            }
-            return;
-        }
-        
         isRetrying = true;
         int delay = ErrorCodes.getRetryDelay(errorCode, retryCount);
-        retryCount++;
-        
+        if (retryCount < Integer.MAX_VALUE) {
+            retryCount++;
+        }
+
         Log.i(TAG, "Scheduling reconnect #" + retryCount + " in " + delay + "ms");
         
         if (retryHandler != null) {
