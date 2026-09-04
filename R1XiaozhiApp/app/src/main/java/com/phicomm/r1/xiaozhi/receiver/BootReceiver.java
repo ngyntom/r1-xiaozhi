@@ -9,6 +9,7 @@ import com.phicomm.r1.xiaozhi.config.XiaozhiConfig;
 import com.phicomm.r1.xiaozhi.service.VoiceRecognitionService;
 import com.phicomm.r1.xiaozhi.service.XiaozhiConnectionService;
 import com.phicomm.r1.xiaozhi.service.LEDControlService;
+import com.phicomm.r1.xiaozhi.service.HTTPServerService;
 
 /**
  * Receiver để tự động khởi động các service khi R1 boot
@@ -40,7 +41,11 @@ public class BootReceiver extends BroadcastReceiver {
                 // Start voice recognition service
                 Intent voiceIntent = new Intent(context, VoiceRecognitionService.class);
                 context.startService(voiceIntent);
-                
+
+                // Start HTTP server / Web UI để điều khiển từ web
+                Intent httpIntent = new Intent(context, HTTPServerService.class);
+                context.startService(httpIntent);
+
                 Log.d(TAG, "All services started successfully");
             } else {
                 Log.d(TAG, "Auto-start disabled in config");

@@ -1,10 +1,8 @@
 name: Code Quality & Tests
 
+# Chỉ chạy thủ công/không tự động, tránh làm trễ hoặc chặn build chính
 on:
-  push:
-    branches: [ main, master, develop ]
-  pull_request:
-    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   lint:

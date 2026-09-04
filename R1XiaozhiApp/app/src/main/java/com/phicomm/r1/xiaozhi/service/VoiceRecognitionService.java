@@ -16,6 +16,7 @@ import android.os.IBinder;
 import android.util.Log;
 
 import com.phicomm.r1.xiaozhi.config.XiaozhiConfig;
+import com.phicomm.r1.xiaozhi.core.XiaozhiCore;
 
 import java.io.ByteArrayOutputStream;
 import java.util.Arrays;
@@ -31,6 +32,11 @@ public class VoiceRecognitionService extends Service {
     private static final String TAG = "VoiceRecognition";
     private static final String CHANNEL_ID = "voice_recognition_channel";
     private static final int NOTIFICATION_ID = 1;
+
+    // Action intent commands - dùng để điều khiển từ Web UI / HTTPServerService
+    public static final String ACTION_SET_LISTENING = "com.phicomm.r1.xiaozhi.VOICE_LISTENING";
+    public static final String ACTION_UPDATE_WAKE_WORD = "com.phicomm.r1.xiaozhi.VOICE_UPDATE_WAKE_WORD";
+    public static final String EXTRA_LISTENING = "listening";
     
     // Audio configuration
     private static final int SAMPLE_RATE = 16000;
@@ -76,11 +82,39 @@ public class VoiceRecognitionService extends Service {
     public void onCreate() {
         super.onCreate();
         config = new XiaozhiConfig(this);
+
+        // Đăng ký với XiaozhiCore để Web UI có thể truy cập trạng thái
+        XiaozhiCore.getInstance().setVoiceService(this);
+
         Log.d(TAG, "VoiceRecognitionService created");
     }
     
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // Xử lý lệnh điều khiển từ Web UI / HTTPServerService
+        if (intent != null && intent.getAction() != null) {
+            String action = intent.getAction();
+
+            if (ACTION_SET_LISTENING.equals(action)) {
+                boolean listening = intent.getBooleanExtra(EXTRA_LISTENING, true);
+                Log.i(TAG, "Set listening (from Web UI): " + listening);
+                setListening(listening);
+                // Cập nhật lại notification với trạng thái mới
+                updateNotification();
+                return START_STICKY;
+            }
+
+            if (ACTION_UPDATE_WAKE_WORD.equals(action)) {
+                Log.i(TAG, "Wake word updated - refreshing notification");
+                if (config != null) {
+                    config = new XiaozhiConfig(this);
+                    Log.i(TAG, "New wake word: " + config.getWakeWord());
+                }
+                updateNotification();
+                return START_STICKY;
+            }
+        }
+
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, createNotification());
 
@@ -98,6 +132,16 @@ public class VoiceRecognitionService extends Service {
         }
 
         return START_STICKY;
+    }
+
+    /**
+     * Cập nhật lại foreground notification (hiển thị wake word hiện tại)
+     */
+    private void updateNotification() {
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (nm != null) {
+            nm.notify(NOTIFICATION_ID, createNotification());
+        }
     }
 
     /**
@@ -478,6 +522,17 @@ public class VoiceRecognitionService extends Service {
     public void setListening(boolean listening) {
         isListeningForWakeWord = listening;
         Log.d(TAG, "Listening: " + listening);
+
+        // Nếu bật listening nhưng chưa recording (service vừa start qua action),
+        // thì bắt đầu recording lại
+        if (listening && !isRecording) {
+            Log.i(TAG, "Listening enabled but not recording - starting recording");
+            if (checkRecordAudioPermission()) {
+                startRecording();
+            } else {
+                Log.e(TAG, "Cannot start recording on enable - no RECORD_AUDIO permission");
+            }
+        }
     }
     
     public boolean isListening() {
@@ -487,6 +542,10 @@ public class VoiceRecognitionService extends Service {
     @Override
     public void onDestroy() {
         stopRecording();
+
+        // Hủy đăng ký khỏi XiaozhiCore
+        XiaozhiCore.getInstance().setVoiceService(null);
+
         super.onDestroy();
         Log.d(TAG, "VoiceRecognitionService destroyed");
     }
