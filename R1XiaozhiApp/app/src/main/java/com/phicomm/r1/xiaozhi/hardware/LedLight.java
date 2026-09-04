@@ -44,10 +44,18 @@ public class LedLight {
      * @param color RGB color value (0xRRGGBB format)
      */
     public static void setColor(long brightness, int color) {
-        if (loaded) {
-            set_color(brightness, color);
-        } else {
+        if (!loaded) {
             Log.w(TAG, "Cannot set LED color - native library not loaded");
+            return;
+        }
+        try {
+            set_color(brightness, color);
+        } catch (UnsatisfiedLinkError e) {
+            // System.loadLibrary() succeeded but the specific native symbol
+            // is missing (JNI signature mismatch) - this throws at call time,
+            // not at load time, and crashes the whole process if uncaught.
+            loaded = false;
+            Log.w(TAG, "LED native symbol not found (packaging mismatch) - disabling LED control: " + e.getMessage());
         }
     }
 
