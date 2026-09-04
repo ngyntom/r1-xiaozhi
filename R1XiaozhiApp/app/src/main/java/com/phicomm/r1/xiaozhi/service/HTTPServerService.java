@@ -7,6 +7,8 @@ import android.os.IBinder;
 import android.util.Log;
 
 import com.phicomm.r1.xiaozhi.activation.DeviceActivator;
+import com.phicomm.r1.xiaozhi.api.XiaozhiApiClient;
+import com.phicomm.r1.xiaozhi.api.model.PairingResponse;
 import com.phicomm.r1.xiaozhi.config.XiaozhiConfig;
 import com.phicomm.r1.xiaozhi.core.XiaozhiCore;
 import com.phicomm.r1.xiaozhi.util.PairingCodeGenerator;
@@ -774,14 +776,15 @@ public class HTTPServerService extends Service {
 
     /**
      * POST /authorize - Bắt đầu quá trình authorization với Xiaozhi
-     * Trả về verification code để user nhập trên website
+     * Gọi API registerDevice() để lấy verification code từ server
      */
     private void serveAuthorize(PrintWriter writer) throws JSONException {
-        boolean isActivated = deviceActivator.isActivated();
+        boolean isPaired = PairingCodeGenerator.isPaired(this);
+        String deviceId = PairingCodeGenerator.getDeviceId(this);
 
         JSONObject response = new JSONObject();
 
-        if (isActivated) {
+        if (isPaired) {
             response.put("success", true);
             response.put("message", "Device already authorized");
             response.put("status", "authorized");
@@ -789,14 +792,29 @@ public class HTTPServerService extends Service {
             return;
         }
 
-        // Start activation process
-        Log.i(TAG, "Starting device activation...");
-        deviceActivator.startActivation();
+        // Call Xiaozhi API to register device and get verification code
+        Log.i(TAG, "Registering device with Xiaozhi API...");
+        try {
+            XiaozhiApiClient apiClient = new XiaozhiApiClient();
+            PairingResponse pairingResp = apiClient.registerDevice(deviceId, "android");
 
-        response.put("success", true);
-        response.put("message", "Authorization process started");
-        response.put("status", "pending");
-        response.put("instruction", "Please visit https://xiaozhi.me/activate and enter the verification code");
+            currentVerificationCode = pairingResp.getCode();
+            verificationCodeTimestamp = System.currentTimeMillis();
+
+            Log.i(TAG, "Got verification code from API: " + currentVerificationCode);
+
+            response.put("success", true);
+            response.put("message", "Verification code received");
+            response.put("status", "pending");
+            response.put("verification_code", currentVerificationCode);
+            response.put("instruction", "Visit https://xiaozhi.me/activate and enter the verification code");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to register device: " + e.getMessage(), e);
+            response.put("success", false);
+            response.put("message", "Registration failed: " + e.getMessage());
+            response.put("status", "error");
+        }
+
         sendJsonResponse(writer, 200, response.toString());
     }
 
