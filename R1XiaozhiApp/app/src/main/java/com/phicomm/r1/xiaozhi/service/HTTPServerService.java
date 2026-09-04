@@ -31,7 +31,7 @@ import java.net.URLDecoder;
 public class HTTPServerService extends Service {
 
     private static final String TAG = "HTTPServer";
-    private static final int PORT = 8080;
+    private static final int PORT = 8081;
 
     private ServerSocket serverSocket;
     private Thread serverThread;
@@ -324,7 +324,7 @@ public class HTTPServerService extends Service {
         "<input type=\"url\" id=\"cloudUrl\" name=\"cloud_url\" placeholder=\"wss://xiaozhi.me/v1/ws\">" +
 
         "<label>URL Self-hosted</label>" +
-        "<input type=\"url\" id=\"selfUrl\" name=\"self_hosted_url\" placeholder=\"ws://IP:8080/websocket\">" +
+        "<input type=\"url\" id=\"selfUrl\" name=\"self_hosted_url\" placeholder=\"ws://IP:8081/websocket\">" +
 
         "<div class=\"row\" style=\"margin-top:12px\">" +
         "<label style=\"display:flex;align-items:center;margin:0;width:auto\">" +
