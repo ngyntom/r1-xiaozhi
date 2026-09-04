@@ -89,6 +89,14 @@ public class LEDControlService extends Service {
                     break;
                     
                 case ACTION_SET_COLOR:
+                    // FIX: a running animation (idle/listening/thinking/etc.)
+                    // keeps re-posting its own tick, which was silently
+                    // overwriting a one-off setColor() on the very next
+                    // tick (confirmed live: a manual green request got
+                    // stomped by an already-running "thinking" pulse within
+                    // 200ms). Must stop it first for a literal color to
+                    // actually stick.
+                    stopAnimation();
                     int color = intent.getIntExtra("color", Color.WHITE);
                     setLEDColor(color);
                     break;
