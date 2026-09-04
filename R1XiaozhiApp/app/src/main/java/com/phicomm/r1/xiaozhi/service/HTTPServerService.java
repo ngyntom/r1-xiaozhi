@@ -1,8 +1,10 @@
 package com.phicomm.r1.xiaozhi.service;
 
+import android.app.ActivityManager;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.media.AudioManager;
 import android.os.IBinder;
 import android.util.Log;
 
@@ -44,6 +46,8 @@ public class HTTPServerService extends Service {
     private DeviceActivator deviceActivator;
     private String currentVerificationCode;
     private long verificationCodeTimestamp;
+    private AudioManager audioManager;
+    private ActivityManager activityManager;
 
     @Override
     public void onCreate() {
@@ -51,6 +55,8 @@ public class HTTPServerService extends Service {
         config = new XiaozhiConfig(this);
         core = XiaozhiCore.getInstance();
         deviceActivator = new DeviceActivator(this);
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        activityManager = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
         setupActivationListener();
     }
 
@@ -254,6 +260,22 @@ public class HTTPServerService extends Service {
                 return;
             }
 
+            // Điều chỉnh âm lượng loa
+            if ("POST".equals(method) && "/volume".equals(path)) {
+                serveSetVolume(writer, body);
+                return;
+            }
+            if ("GET".equals(method) && "/volume".equals(path)) {
+                serveGetVolume(writer);
+                return;
+            }
+
+            // Trạng thái RAM / CPU
+            if ("GET".equals(method) && "/sysinfo".equals(path)) {
+                serveSysInfo(writer);
+                return;
+            }
+
             // Kết nối/ngắt kết nối WebSocket
             if ("POST".equals(method) && "/connect".equals(path)) {
                 serveConnect(writer, body);
@@ -348,7 +370,10 @@ public class HTTPServerService extends Service {
         ".badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600}" +
         ".ok{background:#145a32;color:#7ef0a0}.err{background:#641e16;color:#ff9a94}.idle{background:#4a3700;color:#ffd08a}" +
         ".warn{background:#3d3d1a;color:#f2e88b}" +
-        ".log{background:#0b1217;border-radius:8px;padding:10px;font-family:monospace;font-size:12px;height:120px;overflow-y:auto;margin-top:10px}" +
+        ".log{background:#0b1217;border-radius:8px;padding:10px;font-family:monospace;font-size:12px;height:120px;overflow-y:auto;margin-top:10px;white-space:pre-wrap;word-break:break-word}" +
+        "input[type=range]{width:100%}" +
+        "input[type=color]{width:60px;height:38px;padding:2px;border:1px solid #2b3b4a;border-radius:8px;background:#1a2632}" +
+        ".sysinfo{font-family:monospace;font-size:12px;color:#bcd;line-height:1.6}" +
         ".footer{text-align:center;color:#667;font-size:12px;margin-top:10px}" +
         "</style>" +
         "</head>" +
@@ -360,6 +385,32 @@ public class HTTPServerService extends Service {
         "<h2>Trạng Thái</h2>" +
         "<div class=\"status-box\" id=\"statusBox\">Đang tải...</div>" +
         "<div class=\"status-box\" id=\"authBox\" style=\"margin-top:10px;display:none\"></div>" +
+        "</div>" +
+
+        "<div class=\"card\">" +
+        "<h2>Hệ Thống (RAM / CPU)</h2>" +
+        "<div class=\"sysinfo\" id=\"sysInfoBox\">Đang tải...</div>" +
+        "</div>" +
+
+        "<div class=\"card\">" +
+        "<h2>Âm Lượng</h2>" +
+        "<input type=\"range\" id=\"volumeSlider\" min=\"0\" max=\"100\" value=\"50\" oninput=\"document.getElementById('volumeLabel').textContent=this.value+'%'\" onchange=\"setVolume(this.value)\">" +
+        "<div style=\"text-align:center;margin-top:6px;color:#9ab;font-size:13px\" id=\"volumeLabel\">--%</div>" +
+        "</div>" +
+
+        "<div class=\"card\">" +
+        "<h2>Đèn LED</h2>" +
+        "<div class=\"row\">" +
+        "<button class=\"btn-g\" onclick=\"setLedState('idle')\">Idle</button>" +
+        "<button class=\"btn-b\" onclick=\"setLedState('listening')\">Listening</button>" +
+        "<button class=\"btn-o\" onclick=\"setLedState('thinking')\">Thinking</button>" +
+        "<button class=\"btn-s\" onclick=\"setLedState('speaking')\">Speaking</button>" +
+        "<button class=\"btn-r\" onclick=\"setLedState('error')\">Error</button>" +
+        "</div>" +
+        "<div class=\"row\" style=\"margin-top:10px;align-items:center\">" +
+        "<input type=\"color\" id=\"ledColorPicker\" value=\"#0066cc\" onchange=\"setLedColor(this.value)\">" +
+        "<button class=\"btn-d\" onclick=\"testLed()\">🔄 Test Đèn (chạy qua các trạng thái)</button>" +
+        "</div>" +
         "</div>" +
 
         "<div class=\"card\">" +
@@ -383,7 +434,6 @@ public class HTTPServerService extends Service {
         "<div class=\"row\">" +
         "<button class=\"btn-g\" onclick=\"setVoice(true)\">Bật Đánh Thức (thử nghiệm)</button>" +
         "<button class=\"btn-r\" onclick=\"setVoice(false)\">Tắt Đánh Thức</button>" +
-        "<button class=\"btn-s\" onclick=\"setLed()\">Đổi LED</button>" +
         "</div>" +
         "<div class=\"row\" style=\"margin-top:10px\">" +
         "<button class=\"btn-b\" onclick=\"refresh()\">Làm Mới</button>" +
@@ -483,6 +533,31 @@ public class HTTPServerService extends Service {
         "function sendText(t){req('POST','/send-text',{text:t},function(r,s){log((r&&r.message)||'sent');});}" +
         "function sendCmd(){var t=document.getElementById('cmdText').value;if(t){sendText(t);document.getElementById('cmdText').value='';}}" +
         "function setLed(){req('POST','/led',{action:'cycle'},function(r,s){log((r&&r.message)||'led');});}" +
+        "function setLedState(state){req('POST','/led',{action:'cycle',state:state},function(r,s){log('LED: '+state);});}" +
+        "function setLedColor(hex){req('POST','/led',{color:hex.replace('#','')},function(r,s){log('LED color: '+hex);});}" +
+        "function testLed(){" +
+        "var states=['idle','listening','thinking','speaking','error','idle'];" +
+        "log('Bắt đầu test đèn...');" +
+        "states.forEach(function(st,i){setTimeout(function(){setLedState(st);},i*1200);});" +
+        "}" +
+        "function setVolume(v){req('POST','/volume',{level:v},function(r,s){" +
+        "if(r&&r.volume!==undefined){document.getElementById('volumeLabel').textContent=r.volume+'%';document.getElementById('volumeSlider').value=r.volume;}" +
+        "log((r&&r.message)||'volume');" +
+        "});}" +
+        "function pollSysInfo(){" +
+        "req('GET','/sysinfo',null,function(r,s){" +
+        "if(r){" +
+        "var lines=[];" +
+        "if(r.ram_total_mb!==undefined){lines.push('RAM: '+r.ram_used_mb+' / '+r.ram_total_mb+' MB ('+r.ram_used_percent+'%)'+(r.ram_low?' ⚠ THẤP':''));}" +
+        "if(r.app_heap_used_mb!==undefined){lines.push('App heap: '+r.app_heap_used_mb+' / '+r.app_heap_max_mb+' MB');}" +
+        "if(r.cpu_load_1min!==undefined){lines.push('CPU load: '+r.cpu_load_1min+' / '+r.cpu_load_5min+' / '+r.cpu_load_15min+' (1/5/15 phút, '+r.cpu_cores+' nhân)');}" +
+        "document.getElementById('sysInfoBox').innerHTML=lines.join('<br>');" +
+        "}" +
+        "});" +
+        "req('GET','/volume',null,function(r,s){" +
+        "if(r&&r.volume!==undefined){document.getElementById('volumeLabel').textContent=r.volume+'%';document.getElementById('volumeSlider').value=r.volume;}" +
+        "});" +
+        "}" +
         "document.getElementById('configForm').addEventListener('submit',function(e){" +
         "e.preventDefault();var f=this;" +
         "var data={wake_word:document.getElementById('wakeWord').value," +
@@ -529,9 +604,10 @@ public class HTTPServerService extends Service {
         "}" +
         "});" +
         "}" +
-        "refresh();checkAuthStatus();pollLog();" +
+        "refresh();checkAuthStatus();pollLog();pollSysInfo();" +
         "setInterval(function(){refresh();checkAuthStatus();},5000);" +
         "setInterval(pollLog,2000);" +
+        "setInterval(pollSysInfo,4000);" +
         "</script>" +
         "</body></html>";
     }
@@ -701,6 +777,12 @@ public class HTTPServerService extends Service {
                 ledIntent.setAction(LEDControlService.ACTION_SET_SPEAKING);
             } else if ("error".equals(state)) {
                 ledIntent.setAction(LEDControlService.ACTION_SET_ERROR);
+            } else if (params.has("color")) {
+                // FIX: an explicit color (hex "RRGGBB" or "#RRGGBB") was
+                // being silently dropped here and always replaced by the
+                // next cycled preset color instead.
+                ledIntent.setAction(LEDControlService.ACTION_SET_COLOR);
+                ledIntent.putExtra("color", parseHexColor(params.optString("color")));
             } else {
                 // Default: cycle các màu theo trình tự
                 ledIntent.setAction(LEDControlService.ACTION_SET_COLOR);
@@ -724,6 +806,130 @@ public class HTTPServerService extends Service {
         int c = colors[ledCycleIndex % colors.length];
         ledCycleIndex++;
         return c;
+    }
+
+    /**
+     * Parse "RRGGBB" hoặc "#RRGGBB" thành int màu (0xRRGGBB)
+     */
+    private int parseHexColor(String hex) {
+        if (hex == null) {
+            return 0xFFFFFF;
+        }
+        String clean = hex.startsWith("#") ? hex.substring(1) : hex;
+        try {
+            return (int) Long.parseLong(clean, 16) & 0xFFFFFF;
+        } catch (NumberFormatException e) {
+            Log.w(TAG, "Invalid color hex: " + hex);
+            return 0xFFFFFF;
+        }
+    }
+
+    /**
+     * POST /volume - body: level=0-100
+     */
+    private void serveSetVolume(PrintWriter writer, String body) throws JSONException {
+        JSONObject params = parseBody(body);
+        JSONObject r = new JSONObject();
+
+        int level;
+        try {
+            level = Integer.parseInt(params.optString("level", "-1"));
+        } catch (NumberFormatException e) {
+            level = -1;
+        }
+
+        if (level < 0 || level > 100 || audioManager == null) {
+            r.put("success", false);
+            r.put("message", "Thiếu hoặc sai tham số level (0-100)");
+            sendJsonResponse(writer, 400, r.toString());
+            return;
+        }
+
+        int max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        int index = Math.round(level * max / 100f);
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0);
+
+        r.put("success", true);
+        r.put("volume", getVolumePercent());
+        r.put("message", "Đã đặt âm lượng: " + getVolumePercent() + "%");
+        sendJsonResponse(writer, 200, r.toString());
+    }
+
+    /**
+     * GET /volume - trả về âm lượng hiện tại (%)
+     */
+    private void serveGetVolume(PrintWriter writer) throws JSONException {
+        JSONObject r = new JSONObject();
+        r.put("volume", getVolumePercent());
+        sendJsonResponse(writer, 200, r.toString());
+    }
+
+    private int getVolumePercent() {
+        if (audioManager == null) {
+            return 0;
+        }
+        int max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        int cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+        return max > 0 ? Math.round(cur * 100f / max) : 0;
+    }
+
+    /**
+     * GET /sysinfo - trạng thái RAM / CPU của thiết bị
+     */
+    private void serveSysInfo(PrintWriter writer) throws JSONException {
+        JSONObject r = new JSONObject();
+
+        if (activityManager != null) {
+            ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+            activityManager.getMemoryInfo(mi);
+            long totalMb = mi.totalMem / (1024 * 1024);
+            long availMb = mi.availMem / (1024 * 1024);
+            r.put("ram_total_mb", totalMb);
+            r.put("ram_avail_mb", availMb);
+            r.put("ram_used_mb", totalMb - availMb);
+            r.put("ram_used_percent", totalMb > 0 ? Math.round((totalMb - availMb) * 100f / totalMb) : 0);
+            r.put("ram_low", mi.lowMemory);
+        }
+
+        // App process heap (riêng app này, không phải toàn hệ thống)
+        Runtime rt = Runtime.getRuntime();
+        r.put("app_heap_used_mb", (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024));
+        r.put("app_heap_max_mb", rt.maxMemory() / (1024 * 1024));
+
+        // CPU load average (1/5/15 phút) từ /proc/loadavg - cách đơn giản
+        // và chuẩn trên Linux, không cần lấy mẫu 2 lần như /proc/stat
+        double[] load = readLoadAvg();
+        if (load != null) {
+            r.put("cpu_load_1min", load[0]);
+            r.put("cpu_load_5min", load[1]);
+            r.put("cpu_load_15min", load[2]);
+        }
+        r.put("cpu_cores", Runtime.getRuntime().availableProcessors());
+
+        sendJsonResponse(writer, 200, r.toString());
+    }
+
+    private double[] readLoadAvg() {
+        try {
+            java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader("/proc/loadavg"));
+            String line = reader.readLine();
+            reader.close();
+            if (line == null) {
+                return null;
+            }
+            String[] parts = line.trim().split("\\s+");
+            if (parts.length < 3) {
+                return null;
+            }
+            return new double[]{
+                Double.parseDouble(parts[0]),
+                Double.parseDouble(parts[1]),
+                Double.parseDouble(parts[2])
+            };
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to read /proc/loadavg: " + e.getMessage());
+            return null;
+        }
     }
 
     /**
