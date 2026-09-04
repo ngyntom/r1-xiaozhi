@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.os.IBinder;
 import android.util.Log;
 
+import com.phicomm.r1.xiaozhi.activation.DeviceActivator;
 import com.phicomm.r1.xiaozhi.config.XiaozhiConfig;
 import com.phicomm.r1.xiaozhi.core.XiaozhiCore;
 import com.phicomm.r1.xiaozhi.util.PairingCodeGenerator;
@@ -39,12 +40,44 @@ public class HTTPServerService extends Service {
 
     private XiaozhiConfig config;
     private XiaozhiCore core;
+    private DeviceActivator deviceActivator;
+    private String currentVerificationCode;
+    private long verificationCodeTimestamp;
 
     @Override
     public void onCreate() {
         super.onCreate();
         config = new XiaozhiConfig(this);
         core = XiaozhiCore.getInstance();
+        deviceActivator = new DeviceActivator(this);
+        setupActivationListener();
+    }
+
+    private void setupActivationListener() {
+        deviceActivator.setListener(new DeviceActivator.ActivationListener() {
+            @Override
+            public void onActivationStarted(String verificationCode) {
+                currentVerificationCode = verificationCode;
+                verificationCodeTimestamp = System.currentTimeMillis();
+                Log.i(TAG, "Activation started - Verification code: " + verificationCode);
+            }
+
+            @Override
+            public void onActivationProgress(int attempt, int maxAttempts) {
+                Log.d(TAG, "Activation progress: " + attempt + "/" + maxAttempts);
+            }
+
+            @Override
+            public void onActivationSuccess(String accessToken) {
+                Log.i(TAG, "Device activation successful!");
+                PairingCodeGenerator.markAsPaired(HTTPServerService.this);
+            }
+
+            @Override
+            public void onActivationFailed(String error) {
+                Log.e(TAG, "Device activation failed: " + error);
+            }
+        });
     }
 
     @Override
@@ -209,9 +242,19 @@ public class HTTPServerService extends Service {
                 return;
             }
 
-            // Giữ lại endpoints pairing gốc
+            // Authorization/Pairing endpoints
             if ("GET".equals(method) && "/pairing-code".equals(path)) {
                 servePairingCode(writer);
+                return;
+            }
+
+            if ("POST".equals(method) && "/authorize".equals(path)) {
+                serveAuthorize(writer);
+                return;
+            }
+
+            if ("GET".equals(method) && "/authorize-status".equals(path)) {
+                serveAuthorizeStatus(writer);
                 return;
             }
 
@@ -292,6 +335,15 @@ public class HTTPServerService extends Service {
         "<div class=\"card\">" +
         "<h2>Trạng Thái</h2>" +
         "<div class=\"status-box\" id=\"statusBox\">Đang tải...</div>" +
+        "<div class=\"status-box\" id=\"authBox\" style=\"margin-top:10px;display:none\"></div>" +
+        "</div>" +
+
+        "<div class=\"card\">" +
+        "<h2>Xác Thực Thiết Bị (Authorization)</h2>" +
+        "<div id=\"authStatus\" style=\"margin-bottom:12px\"></div>" +
+        "<div class=\"row\">" +
+        "<button class=\"btn-g\" id=\"authBtn\" onclick=\"startAuthorization()\">Bắt Đầu Xác Thực</button>" +
+        "</div>" +
         "</div>" +
 
         "<div class=\"card\">" +
@@ -401,7 +453,34 @@ public class HTTPServerService extends Service {
         "auto_start:document.getElementById('autoStart').checked?'true':'false'};" +
         "req('POST','/update-config',data,function(r,s){log((r&&r.message)||'saved');});" +
         "},false);" +
-        "refresh();setInterval(refresh,5000);" +
+        "function startAuthorization(){" +
+        "document.getElementById('authBtn').disabled=true;" +
+        "req('POST','/authorize',null,function(r,s){" +
+        "if(r&&r.success){log('Authorization process started');checkAuthStatus();}" +
+        "document.getElementById('authBtn').disabled=false;" +
+        "});" +
+        "}" +
+        "function checkAuthStatus(){" +
+        "req('GET','/authorize-status',null,function(r,s){" +
+        "if(r){" +
+        "var statusDiv=document.getElementById('authStatus');" +
+        "if(r.activated){" +
+        "statusDiv.innerHTML='<span class=\"badge ok\">✓ Authorized</span> Device is authenticated';" +
+        "document.getElementById('authBtn').textContent='Xác Thực Lại';document.getElementById('authBtn').disabled=false;" +
+        "}else if(r.status==='pending'){" +
+        "statusDiv.innerHTML='<span class=\"badge warn\">⏳ Pending</span><br/>Code: <strong>'+r.verification_code+'</strong><br/>'+r.instruction;" +
+        "document.getElementById('authBtn').disabled=true;" +
+        "}else if(r.status==='expired'){" +
+        "statusDiv.innerHTML='<span class=\"badge err\">✗ Expired</span> Code expired, start again';" +
+        "document.getElementById('authBtn').disabled=false;" +
+        "}else{" +
+        "statusDiv.innerHTML='<span class=\"badge idle\">○ Idle</span> Not in progress';" +
+        "document.getElementById('authBtn').disabled=false;" +
+        "}" +
+        "}" +
+        "});" +
+        "}" +
+        "refresh();checkAuthStatus();setInterval(function(){refresh();checkAuthStatus();},5000);" +
         "</script>" +
         "</body></html>";
     }
@@ -690,6 +769,66 @@ public class HTTPServerService extends Service {
         response.put("message", "Pairing reset successfully");
         sendJsonResponse(writer, 200, response.toString());
         Log.i(TAG, "Pairing reset via HTTP");
+    }
+
+    /**
+     * POST /authorize - Bắt đầu quá trình authorization với Xiaozhi
+     * Trả về verification code để user nhập trên website
+     */
+    private void serveAuthorize(PrintWriter writer) throws JSONException {
+        boolean isActivated = deviceActivator.isActivated();
+
+        JSONObject response = new JSONObject();
+
+        if (isActivated) {
+            response.put("success", true);
+            response.put("message", "Device already authorized");
+            response.put("status", "authorized");
+            sendJsonResponse(writer, 200, response.toString());
+            return;
+        }
+
+        // Start activation process
+        Log.i(TAG, "Starting device activation...");
+        deviceActivator.startActivation();
+
+        response.put("success", true);
+        response.put("message", "Authorization process started");
+        response.put("status", "pending");
+        response.put("instruction", "Please visit https://xiaozhi.me/activate and enter the verification code");
+        sendJsonResponse(writer, 200, response.toString());
+    }
+
+    /**
+     * GET /authorize-status - Kiểm tra trạng thái authorization
+     * Trả về verification code nếu đang chờ
+     */
+    private void serveAuthorizeStatus(PrintWriter writer) throws JSONException {
+        boolean isActivated = deviceActivator.isActivated();
+
+        JSONObject response = new JSONObject();
+        response.put("activated", isActivated);
+
+        if (isActivated) {
+            response.put("status", "authorized");
+            response.put("message", "Device is authorized");
+        } else if (currentVerificationCode != null) {
+            response.put("status", "pending");
+            response.put("verification_code", currentVerificationCode);
+            response.put("instruction", "Enter this code at https://xiaozhi.me/activate");
+
+            // Check if code expired (> 10 minutes)
+            long ageMs = System.currentTimeMillis() - verificationCodeTimestamp;
+            if (ageMs > 10 * 60 * 1000) {
+                response.put("status", "expired");
+                response.put("message", "Verification code expired");
+            }
+        } else {
+            response.put("status", "idle");
+            response.put("message", "No authorization in progress");
+        }
+
+        sendJsonResponse(writer, 200, response.toString());
     }
 
     private void sendResponse(PrintWriter writer, int statusCode, String statusMessage) {
