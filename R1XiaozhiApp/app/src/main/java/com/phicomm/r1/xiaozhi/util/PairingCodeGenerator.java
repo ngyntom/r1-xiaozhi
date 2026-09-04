@@ -86,18 +86,26 @@ public class PairingCodeGenerator {
     }
     
     /**
-     * Lấy pairing code = 6 ký tự cuối của Device ID
-     * Theo ESP32: deviceId.substring(deviceId.length() - 6)
-     * FORCE uppercase để đảm bảo match với server
+     * Lấy pairing code = 6 số từ Device ID
+     * Xiaozhi.me chỉ chấp nhận numeric code (000000-999999)
+     * Hash Device ID → mod 1000000 → 6-digit numeric code
      */
     public static String getPairingCode(Context context) {
         String deviceId = getDeviceId(context);
-        String code = deviceId.substring(deviceId.length() - 6).toUpperCase();
-        Log.i(TAG, "=== PAIRING CODE DEBUG ===");
-        Log.i(TAG, "Device ID: " + deviceId);
-        Log.i(TAG, "Pairing Code: " + code);
-        Log.i(TAG, "=========================");
-        return code;
+        try {
+            long hash = deviceId.hashCode() & 0xFFFFFFFFL;
+            long code = hash % 1000000;
+            String numericCode = String.format("%06d", code);
+            Log.i(TAG, "=== PAIRING CODE DEBUG ===");
+            Log.i(TAG, "Device ID: " + deviceId);
+            Log.i(TAG, "Pairing Code: " + numericCode);
+            Log.i(TAG, "=========================");
+            return numericCode;
+        } catch (Exception e) {
+            Log.e(TAG, "Error generating numeric code: " + e.getMessage());
+            String fallback = String.format("%06d", System.currentTimeMillis() % 1000000);
+            return fallback;
+        }
     }
     
     /**
