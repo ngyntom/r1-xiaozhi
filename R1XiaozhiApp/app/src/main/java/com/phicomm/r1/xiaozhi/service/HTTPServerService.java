@@ -368,7 +368,7 @@ public class HTTPServerService extends Service {
         "'Wake Word: '+(r.wake_word||'-')+'\\n'+" +
         "'Mode: '+(r.use_cloud?'Cloud':'Self-hosted')+'\\n'+" +
         "'URL: '+(r.active_url||'-')+'\\n'+" +
-        "'LED: '+(r.led_enabled?'Enabled':'Disabled')+' | AutoStart: '+(r.auto_start?'ON':'OFF')"; +
+        "'LED: '+(r.led_enabled?'Enabled':'Disabled')+' | AutoStart: '+(r.auto_start?'ON':'OFF')" +
         "}" +
         "});" +
         "req('GET','/config',null,function(r,s){" +
