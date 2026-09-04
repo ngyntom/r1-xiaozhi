@@ -235,10 +235,16 @@ public class HTTPServerService extends Service {
 
     private void serveDashboard(PrintWriter writer) {
         String html = buildDashboardHtml();
+        int byteLen;
+        try {
+            byteLen = html.getBytes("UTF-8").length;
+        } catch (java.io.UnsupportedEncodingException e) {
+            byteLen = html.length();
+        }
         StringBuilder sb = new StringBuilder();
         sb.append("HTTP/1.1 200 OK\r\n");
         sb.append("Content-Type: text/html; charset=utf-8\r\n");
-        sb.append("Content-Length: ").append(html.length()).append("\r\n");
+        sb.append("Content-Length: ").append(byteLen).append("\r\n");
         sb.append("Connection: close\r\n\r\n");
         sb.append(html);
         writer.print(sb.toString());
@@ -695,10 +701,16 @@ public class HTTPServerService extends Service {
 
     private void sendJsonResponse(PrintWriter writer, int statusCode, String json) {
         String statusMessage = statusCode == 200 ? "OK" : "Error";
+        int byteLen;
+        try {
+            byteLen = json.getBytes("UTF-8").length;
+        } catch (java.io.UnsupportedEncodingException e) {
+            byteLen = json.length();
+        }
         StringBuilder sb = new StringBuilder();
         sb.append("HTTP/1.1 ").append(statusCode).append(" ").append(statusMessage).append("\r\n");
         sb.append("Content-Type: application/json; charset=utf-8\r\n");
-        sb.append("Content-Length: ").append(json.length()).append("\r\n");
+        sb.append("Content-Length: ").append(byteLen).append("\r\n");
         sb.append("Connection: close\r\n\r\n");
         sb.append(json);
         writer.print(sb.toString());
