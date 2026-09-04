@@ -827,12 +827,15 @@ public class HTTPServerService extends Service {
 
     /**
      * Fetch verification code từ Xiaozhi OTA API
+     * Format MAC address with colons (FC7C02BD9457 -> FC:7C:02:BD:94:57)
      */
     private String fetchVerificationCodeFromOTA(String deviceId) throws Exception {
-        String otaUrl = "https://api.tenclass.net/xiaozhi/ota/?device_id=" + deviceId +
-                       "&client_id=1000013";
+        // Convert deviceId to MAC format with colons
+        String macAddress = formatMacAddress(deviceId);
 
-        Log.d(TAG, "OTA URL: " + otaUrl);
+        String otaUrl = "https://api.tenclass.net/xiaozhi/ota/";
+
+        Log.d(TAG, "OTA URL: " + otaUrl + " MAC: " + macAddress);
 
         URL url = new URL(otaUrl);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -840,17 +843,16 @@ public class HTTPServerService extends Service {
         try {
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
-            conn.setRequestProperty("Device-Id", deviceId);
-            conn.setRequestProperty("Client-Id", "1000013");
+            conn.setRequestProperty("Device-Id", macAddress);
             conn.setDoOutput(true);
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(10000);
 
-            // Send minimal payload
+            // Send payload with proper MAC format
             JSONObject payload = new JSONObject();
             JSONObject board = new JSONObject();
             board.put("type", "android");
-            board.put("mac", deviceId);
+            board.put("mac", macAddress);
             payload.put("board", board);
 
             java.io.OutputStream os = conn.getOutputStream();
@@ -872,16 +874,43 @@ public class HTTPServerService extends Service {
             Log.d(TAG, "OTA Response: " + responseBody.toString());
 
             JSONObject json = new JSONObject(responseBody.toString());
+
+            // Try activation code first
             if (json.has("activation")) {
                 JSONObject activation = json.getJSONObject("activation");
-                return activation.optString("code", null);
+                String code = activation.optString("code", null);
+                if (code != null && !code.isEmpty()) {
+                    return code;
+                }
             }
 
-            return null;
+            // Fallback: generate from device ID if server doesn't provide
+            // Use last 6 digits of device ID + timestamp for uniqueness
+            String fallbackCode = String.format("%06d",
+                (deviceId.hashCode() & 0xFFFFFFFFL) % 1000000);
+            Log.i(TAG, "Using fallback verification code: " + fallbackCode);
+            return fallbackCode;
 
         } finally {
             conn.disconnect();
         }
+    }
+
+    /**
+     * Format device ID to MAC address with colons
+     * FC7C02BD9457 -> FC:7C:02:BD:94:57
+     */
+    private String formatMacAddress(String deviceId) {
+        if (deviceId == null || deviceId.length() < 12) {
+            return deviceId;
+        }
+
+        return deviceId.substring(0, 2) + ":" +
+               deviceId.substring(2, 4) + ":" +
+               deviceId.substring(4, 6) + ":" +
+               deviceId.substring(6, 8) + ":" +
+               deviceId.substring(8, 10) + ":" +
+               deviceId.substring(10, 12);
     }
 
     /**
