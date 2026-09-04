@@ -537,7 +537,9 @@ public class XiaozhiConnectionService extends Service {
             } else if ("stt".equals(type)) {
                 // ASR transcript of what the server heard - real field is
                 // "text" at the top level, not nested under "payload".
-                Log.i(TAG, "STT transcript: " + json.optString("text"));
+                String sttText = json.optString("text");
+                Log.i(TAG, "STT transcript: " + sttText);
+                core.addLogEntry("Bạn", sttText);
             } else if ("hello".equals(type)) {
                 // Server's own hello reply - this is what actually confirms
                 // the session is live (the HTTP 101 upgrade alone doesn't;
@@ -586,7 +588,9 @@ public class XiaozhiConnectionService extends Service {
             } else if ("sentence_start".equals(state)) {
                 // Carries the TTS text being spoken (for subtitle/logging
                 // display only - doesn't change device state).
-                Log.i(TAG, "TTS sentence: " + json.optString("text"));
+                String ttsText = json.optString("text");
+                Log.i(TAG, "TTS sentence: " + ttsText);
+                core.addLogEntry("Xiaozhi", ttsText);
             } else if ("stop".equals(state)) {
                 if (core.getAudioService() != null) {
                     core.getAudioService().stopStreaming();

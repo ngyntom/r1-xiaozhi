@@ -45,6 +45,13 @@ public class XiaozhiCore {
     
     // Application context
     private Context applicationContext;
+
+    // Conversation log (STT/TTS text) for the Web UI dashboard - polled via
+    // HTTPServerService's GET /log endpoint since the dashboard is plain
+    // HTTP request/response, not a live WebSocket to the browser.
+    private final java.util.List<String[]> conversationLog = new java.util.ArrayList<>();
+    private int nextLogSeq = 1;
+    private static final int MAX_LOG_ENTRIES = 200;
     
     /**
      * Private constructor để enforce singleton pattern
@@ -293,6 +300,34 @@ public class XiaozhiCore {
         return eventBus;
     }
     
+    // ==================== Conversation Log (for Web UI) ====================
+
+    /**
+     * Record one conversation event (STT transcript, TTS sentence, etc.)
+     * so the Web UI dashboard's log box can display it - see HTTPServerService
+     * GET /log.
+     */
+    public synchronized void addLogEntry(String label, String text) {
+        conversationLog.add(new String[]{String.valueOf(nextLogSeq++), label, text});
+        if (conversationLog.size() > MAX_LOG_ENTRIES) {
+            conversationLog.remove(0);
+        }
+    }
+
+    /**
+     * Get conversation entries with seq strictly greater than the given
+     * value, for incremental polling from the dashboard.
+     */
+    public synchronized java.util.List<String[]> getLogEntriesSince(int seq) {
+        java.util.List<String[]> result = new java.util.ArrayList<>();
+        for (String[] entry : conversationLog) {
+            if (Integer.parseInt(entry[0]) > seq) {
+                result.add(entry);
+            }
+        }
+        return result;
+    }
+
     // ==================== Context Access ====================
     
     /**

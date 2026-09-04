@@ -11,6 +11,7 @@ import com.phicomm.r1.xiaozhi.config.XiaozhiConfig;
 import com.phicomm.r1.xiaozhi.core.XiaozhiCore;
 import com.phicomm.r1.xiaozhi.util.PairingCodeGenerator;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -280,6 +281,12 @@ public class HTTPServerService extends Service {
                 return;
             }
 
+            // Nhật ký hội thoại (STT/TTS) - dashboard poll định kỳ để hiển thị
+            if ("GET".equals(method) && "/log".equals(path)) {
+                serveLog(writer, query);
+                return;
+            }
+
             sendResponse(writer, 404, "Not Found");
 
         } catch (Exception e) {
@@ -513,7 +520,18 @@ public class HTTPServerService extends Service {
         "}" +
         "});" +
         "}" +
-        "refresh();checkAuthStatus();setInterval(function(){refresh();checkAuthStatus();},5000);" +
+        "var lastLogSeq=0;" +
+        "function pollLog(){" +
+        "req('GET','/log?after='+lastLogSeq,null,function(r,s){" +
+        "if(r&&r.entries){" +
+        "for(var i=0;i<r.entries.length;i++){log(r.entries[i].label+': '+r.entries[i].text);}" +
+        "lastLogSeq=r.last_seq;" +
+        "}" +
+        "});" +
+        "}" +
+        "refresh();checkAuthStatus();pollLog();" +
+        "setInterval(function(){refresh();checkAuthStatus();},5000);" +
+        "setInterval(pollLog,2000);" +
         "</script>" +
         "</body></html>";
     }
@@ -817,6 +835,46 @@ public class HTTPServerService extends Service {
         response.put("message", "Pairing reset successfully");
         sendJsonResponse(writer, 200, response.toString());
         Log.i(TAG, "Pairing reset via HTTP");
+    }
+
+    /**
+     * GET /log?after=<seq> - trả về các dòng hội thoại (STT/TTS) mới hơn
+     * seq đã cho, để dashboard poll và hiển thị trong "Nhật Ký Server".
+     */
+    private void serveLog(PrintWriter writer, String query) throws JSONException {
+        int after = 0;
+        if (query != null) {
+            for (String pair : query.split("&")) {
+                int idx = pair.indexOf('=');
+                if (idx > 0 && pair.substring(0, idx).equals("after")) {
+                    try {
+                        after = Integer.parseInt(pair.substring(idx + 1));
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            }
+        }
+
+        JSONArray entries = new JSONArray();
+        int maxSeq = after;
+        if (core != null) {
+            for (String[] entry : core.getLogEntriesSince(after)) {
+                JSONObject e = new JSONObject();
+                int seq = Integer.parseInt(entry[0]);
+                e.put("seq", seq);
+                e.put("label", entry[1]);
+                e.put("text", entry[2]);
+                entries.put(e);
+                if (seq > maxSeq) {
+                    maxSeq = seq;
+                }
+            }
+        }
+
+        JSONObject response = new JSONObject();
+        response.put("entries", entries);
+        response.put("last_seq", maxSeq);
+        sendJsonResponse(writer, 200, response.toString());
     }
 
     /**
